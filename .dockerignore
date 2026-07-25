@@ -1,0 +1,13 @@
+.git
+.github
+.pytest_cache
+.vscode
+**/__pycache__
+**/*.pyc
+cairn/.pytest_cache
+cairn/.venv
+cairn/*.db
+datas
+docs
+container
+dispatch*.yaml

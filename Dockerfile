@@ -1,11 +1,31 @@
-FROM ghcr.io/astral-sh/uv:python3.13-trixie
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-COPY ./cairn/pyproject.toml /cairn/pyproject.toml
-COPY ./cairn/uv.lock /cairn/uv.lock
+ENV PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai \
+    UV_COMPILE_BYTECODE=1 \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_FROZEN=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_SYNC=1
+
+RUN groupadd --system cairn \
+    && useradd --system --gid cairn --home-dir /home/cairn --create-home cairn \
+    && mkdir -p /cairn \
+    && chown cairn:cairn /cairn
+
 WORKDIR /cairn
-RUN uv sync --frozen --no-install-project -i https://mirrors.aliyun.com/pypi/simple/
+USER cairn
 
-COPY ./cairn /cairn
-RUN uv sync --frozen -i https://mirrors.aliyun.com/pypi/simple/
+COPY --chown=cairn:cairn ./cairn/pyproject.toml ./pyproject.toml
+COPY --chown=cairn:cairn ./cairn/uv.lock ./uv.lock
+RUN uv sync --frozen --no-dev --no-install-project
 
-ENV TZ=Asia/Shanghai
+COPY --chown=cairn:cairn ./cairn/src ./src
+COPY --chown=cairn:cairn ./cairn/alembic.ini ./alembic.ini
+COPY --chown=cairn:cairn ./cairn/migrations ./migrations
+RUN uv sync --frozen --no-dev
+
+ENV PATH="/cairn/.venv/bin:${PATH}"
+
+EXPOSE 8000
+CMD ["uv", "run", "cairn", "serve", "--host", "0.0.0.0", "--no-access-log"]

@@ -1,37 +1,61 @@
 services:
+  cairn-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${CAIRN_POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${CAIRN_POSTGRES_PASSWORD:-cairn}
+      POSTGRES_DB: ${CAIRN_POSTGRES_DB:-cairn}
+    volumes:
+      - cairn-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
   cairn-server:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cairn-app
-    container_name: cairn-server
+    image: cairn-audit-api:local
+    environment:
+      CAIRN_DATABASE_URL: postgresql+psycopg://${CAIRN_POSTGRES_USER:-cairn}:${CAIRN_POSTGRES_PASSWORD:-cairn}@cairn-postgres:5432/${CAIRN_POSTGRES_DB:-cairn}
+      CAIRN_SQL_ECHO: ${CAIRN_SQL_ECHO:-false}
+    depends_on:
+      cairn-postgres:
+        condition: service_healthy
     ports:
-      - "8000:8000"
-    volumes:
-      - ./datas/cairn/:/root/.local/share/cairn/
+      - "127.0.0.1:8000:8000"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        uv run alembic -c alembic.ini upgrade head
+        exec uv run cairn serve --host 0.0.0.0 --no-access-log
     healthcheck:
       test:
-        - "CMD"
-        - "python"
-        - "-c"
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/projects', timeout=5)"
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 3s
+      start_period: 10s
     restart: unless-stopped
-    command: ["uv", "run", "cairn", "serve", "--host", "0.0.0.0", "--no-access-log"]
-  cairn-dispatcher:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: cairn-app
-    container_name: cairn-dispatcher
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./dispatch.yaml:/cairn/dispatch.yaml
-    depends_on:
-      cairn-server:
-        condition: service_healthy
-    restart: unless-stopped
-    command: ["uv", "run", "cairn", "dispatch", "--config", "dispatch.yaml"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  cairn-postgres-data:
