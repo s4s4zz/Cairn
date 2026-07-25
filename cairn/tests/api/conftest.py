@@ -43,6 +43,7 @@ def session_factory() -> Generator[sessionmaker[Session], None, None]:
 @pytest.fixture
 def client(session_factory: sessionmaker[Session]) -> Generator[TestClient, None, None]:
     from cairn.server.routers.audit_runs import router as audit_runs_router
+    from cairn.server.routers.findings import router as findings_router
     from cairn.server.routers.policies import router as policies_router
     from cairn.server.routers.repositories import router as repositories_router
 
@@ -51,6 +52,7 @@ def client(session_factory: sessionmaker[Session]) -> Generator[TestClient, None
     app.include_router(repositories_router, prefix="/api/v1")
     app.include_router(policies_router, prefix="/api/v1")
     app.include_router(audit_runs_router, prefix="/api/v1")
+    app.include_router(findings_router, prefix="/api/v1")
 
     def override_session() -> Generator[Session, None, None]:
         session = session_factory()

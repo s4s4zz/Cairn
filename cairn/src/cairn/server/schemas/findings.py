@@ -24,13 +24,19 @@ class CandidateLocation(StrictModel):
     end_line: int = Field(gt=0)
     symbol: str | None = Field(default=None, max_length=2048)
     code_snippet: str = Field(min_length=1)
-    snapshot_sha: str = Field(pattern=r"^[0-9a-f]{40,128}$")
+    snapshot_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     ordinal: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_line_range(self) -> Self:
         if self.end_line < self.start_line:
             raise ValueError("end_line must be greater than or equal to start_line")
+        normalized = self.file_path.replace("\\", "/")
+        if normalized.startswith("/") or ".." in normalized.split("/"):
+            raise ValueError("file_path must be a relative snapshot path")
+        if len(normalized) >= 2 and normalized[1] == ":":
+            raise ValueError("file_path must not contain a drive prefix")
+        self.file_path = normalized
         return self
 
 
@@ -60,6 +66,13 @@ class CandidateFindingCommand(StrictModel):
             raise ValueError("candidate confidence cannot be confirmed")
         return value
 
+    @model_validator(mode="after")
+    def validate_location_ordinals(self) -> Self:
+        ordinals = [location.ordinal for location in self.locations]
+        if len(ordinals) != len(set(ordinals)):
+            raise ValueError("location ordinals must be unique")
+        return self
+
 
 class FindingLocationResponse(StrictModel):
     id: UUID
@@ -88,6 +101,7 @@ class VerificationSummary(StrictModel):
     method: VerificationMethod
     verdict: VerificationVerdict
     verifier: str
+    evidence_ids: list[UUID]
     reasoning: str
     created_at: datetime
 
