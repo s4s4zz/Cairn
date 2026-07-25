@@ -325,7 +325,7 @@ AuditRun
 - policy_id: UUID
 - policy_version: integer
 - status: AuditRunStatus
-- current_stage: AuditStage
+- current_stage: AuditStage | null
 - progress: decimal
 - warning_count: integer
 - failure_code: string | null
@@ -335,6 +335,10 @@ AuditRun
 - started_at: timestamp | null
 - completed_at: timestamp | null
 ```
+
+`AuditStage` 取值固定为 `ingesting | preprocessing | static_scanning |
+semantic_auditing | dynamic_verifying | machine_review | human_review | reporting`。
+AuditRun 处于 `created` 且尚未开始时 `current_stage` 为 `null`；取消、失败或完成后保留最后进入的阶段，便于审计和故障定位。
 
 状态机：
 
@@ -583,7 +587,7 @@ AuditIntent
 - scope
 - required_capabilities
 - source_fact_ids
-- status
+- status: pending | claimed | concluded | cancelled
 - created_by_task_id
 - claimed_by_task_id
 - created_at

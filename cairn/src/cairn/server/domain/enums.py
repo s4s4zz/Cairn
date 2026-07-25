@@ -44,6 +44,17 @@ class AuditRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class AuditStage(StrEnum):
+    INGESTING = "ingesting"
+    PREPROCESSING = "preprocessing"
+    STATIC_SCANNING = "static_scanning"
+    SEMANTIC_AUDITING = "semantic_auditing"
+    DYNAMIC_VERIFYING = "dynamic_verifying"
+    MACHINE_REVIEW = "machine_review"
+    HUMAN_REVIEW = "human_review"
+    REPORTING = "reporting"
+
+
 class AuditTaskType(StrEnum):
     INVENTORY = "inventory"
     BUILD = "build"
@@ -157,3 +168,20 @@ class ReviewVerdict(StrEnum):
     REJECTED = "rejected"
     ACCEPTED_RISK = "accepted_risk"
     REVERIFY = "reverify"
+
+
+class AuditFactKind(StrEnum):
+    ARCHITECTURE = "architecture"
+    ENTRYPOINT = "entrypoint"
+    TRUST_BOUNDARY = "trust_boundary"
+    SOURCE = "source"
+    SINK = "sink"
+    CANDIDATE_FINDING = "candidate_finding"
+    VERIFICATION_RESULT = "verification_result"
+
+
+class AuditIntentStatus(StrEnum):
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    CONCLUDED = "concluded"
+    CANCELLED = "cancelled"

@@ -3,7 +3,10 @@ import pytest
 from cairn.server.domain.enums import (
     ArtifactAccessLevel,
     ArtifactKind,
+    AuditFactKind,
+    AuditIntentStatus,
     AuditRunStatus,
+    AuditStage,
     AuditTaskStatus,
     AuditTaskType,
     BuildStatus,
@@ -156,6 +159,16 @@ def test_persisted_enum_values_match_the_design() -> None:
     assert values(SnapshotStatus) == {"creating", "ready", "rejected", "failed"}
     assert values(BuildSystem) == {"maven", "gradle", "mixed", "unknown"}
     assert values(DynamicVerificationMode) == {"required", "preferred", "disabled"}
+    assert values(AuditStage) == {
+        "ingesting",
+        "preprocessing",
+        "static_scanning",
+        "semantic_auditing",
+        "dynamic_verifying",
+        "machine_review",
+        "human_review",
+        "reporting",
+    }
     assert values(AuditTaskType) == {
         "inventory",
         "build",
@@ -234,4 +247,19 @@ def test_persisted_enum_values_match_the_design() -> None:
         "rejected",
         "accepted_risk",
         "reverify",
+    }
+    assert values(AuditFactKind) == {
+        "architecture",
+        "entrypoint",
+        "trust_boundary",
+        "source",
+        "sink",
+        "candidate_finding",
+        "verification_result",
+    }
+    assert values(AuditIntentStatus) == {
+        "pending",
+        "claimed",
+        "concluded",
+        "cancelled",
     }

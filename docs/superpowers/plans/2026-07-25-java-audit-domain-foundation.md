@@ -309,7 +309,7 @@ class AuditRunStatus(StrEnum):
     FAILED = "failed"
 ```
 
-Also define `BuildSystem`, `DynamicVerificationMode`, `AuditTaskType`, `AuditTaskStatus`, `FindingSeverity`, `FindingConfidence`, `FindingStatus`, `RuntimeVerificationStatus`, `LocationRole`, `ArtifactKind`, `ArtifactAccessLevel`, `EvidenceType`, `VerificationMethod`, `VerificationVerdict`, `BuildStatus`, and `ReviewVerdict` with exactly the values from the design document.
+Also define `BuildSystem`, `DynamicVerificationMode`, `AuditStage`, `AuditTaskType`, `AuditTaskStatus`, `FindingSeverity`, `FindingConfidence`, `FindingStatus`, `RuntimeVerificationStatus`, `LocationRole`, `ArtifactKind`, `ArtifactAccessLevel`, `EvidenceType`, `VerificationMethod`, `VerificationVerdict`, `BuildStatus`, `ReviewVerdict`, `AuditFactKind`, and `AuditIntentStatus` with exactly the values from the design document.
 
 - [ ] **Step 4: Implement pure transition functions**
 
