@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from cairn.server.db import get_conn
 from cairn.server.models import CreateHintRequest, Hint
-from cairn.server.services import check_project_hint_writable, next_hint_id, utcnow
+from cairn.server.legacy_services import check_project_hint_writable, next_hint_id, utcnow
 
 router = APIRouter(tags=["hints"])
 

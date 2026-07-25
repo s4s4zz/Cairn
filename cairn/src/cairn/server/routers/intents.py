@@ -9,7 +9,7 @@ from cairn.server.models import (
     HeartbeatRequest,
     Intent,
 )
-from cairn.server.services import (
+from cairn.server.legacy_services import (
     check_project_active,
     get_claimable_open_intent_or_404,
     get_releasable_open_intent_or_404,

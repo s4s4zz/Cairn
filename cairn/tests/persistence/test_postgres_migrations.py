@@ -33,6 +33,8 @@ def test_initial_migration_renders_ordered_postgresql_ddl() -> None:
         "ALTER TABLE audit_runs ADD CONSTRAINT "
         "fk_audit_runs_snapshot_id_source_snapshots" in ddl
     )
+    assert "INSERT INTO audit_policies" in ddl
+    assert "'comprehensive'" in ddl
 
 
 @pytest.mark.postgres

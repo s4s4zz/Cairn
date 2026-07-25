@@ -169,7 +169,12 @@ class AuditRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     source_request: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     snapshot_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("source_snapshots.id", ondelete="RESTRICT")
+        ForeignKey(
+            "source_snapshots.id",
+            name="fk_audit_runs_snapshot_id_source_snapshots",
+            ondelete="RESTRICT",
+            use_alter=True,
+        )
     )
     policy_id: Mapped[UUID] = mapped_column(
         ForeignKey("audit_policies.id", ondelete="RESTRICT"),

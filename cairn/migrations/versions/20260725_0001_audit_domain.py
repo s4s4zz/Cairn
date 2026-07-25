@@ -86,6 +86,29 @@ def upgrade() -> None:
     )
     op.create_index('ix_audit_policies_name', 'audit_policies', ['name'], unique=False)
     op.create_index('uq_audit_policies_active_name', 'audit_policies', ['name'], unique=True, postgresql_where=sa.text('active'), sqlite_where=sa.text('active = 1'))
+    op.execute(
+        sa.text(
+            """
+            INSERT INTO audit_policies (
+                id, name, version, include_paths, exclude_paths,
+                enabled_scanners, dynamic_verification,
+                severity_thresholds, resource_budget, active, created_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000001',
+                'comprehensive',
+                1,
+                '["**"]',
+                '[]',
+                '["codeql", "config-rules", "dependency-check", "findsecbugs", "gitleaks", "semgrep", "trivy"]',
+                'required',
+                '{}',
+                '{}',
+                true,
+                '2026-07-25T00:00:00+00:00'
+            )
+            """
+        )
+    )
     op.create_table('audit_runs',
     sa.Column('repository_id', sa.Uuid(), nullable=False),
     sa.Column('source_request', sa.JSON(), nullable=False),

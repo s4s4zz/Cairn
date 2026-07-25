@@ -4,7 +4,7 @@ from datetime import datetime
 import yaml
 
 from cairn.server.db import get_conn
-from cairn.server.services import expire_reason_leases, expire_workers, get_project_or_404
+from cairn.server.legacy_services import expire_reason_leases, expire_workers, get_project_or_404
 
 router = APIRouter(tags=["export"])
 

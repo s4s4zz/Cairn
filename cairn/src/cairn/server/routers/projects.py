@@ -17,7 +17,7 @@ from cairn.server.models import (
     UpdateProjectTitleRequest,
     UpdateProjectStatusRequest,
 )
-from cairn.server.services import (
+from cairn.server.legacy_services import (
     build_intents,
     check_project_completed,
     check_project_active,
