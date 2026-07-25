@@ -4,6 +4,7 @@ from cairn.server.persistence.models.core import (
     AuditRun,
     AuditTask,
     Repository,
+    SnapshotImmutableError,
     SourceSnapshot,
 )
 from cairn.server.persistence.models.findings import (
@@ -34,6 +35,7 @@ __all__ = [
     "HumanReview",
     "Report",
     "Repository",
+    "SnapshotImmutableError",
     "SourceSnapshot",
     "Verification",
 ]

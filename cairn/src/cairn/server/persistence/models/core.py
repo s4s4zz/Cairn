@@ -16,6 +16,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
+    inspect,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -109,6 +111,28 @@ class SourceSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     repository: Mapped[Repository] = relationship(back_populates="snapshots")
     artifact: Mapped[Artifact] = relationship(foreign_keys=[artifact_id])
+
+
+class SnapshotImmutableError(ValueError):
+    """Raised when persisted data in a ready Snapshot is changed."""
+
+
+@event.listens_for(SourceSnapshot, "before_update")
+def prevent_ready_snapshot_update(mapper, connection, target: SourceSnapshot) -> None:
+    del connection
+    state = inspect(target)
+    changed = any(
+        state.attrs[column.key].history.has_changes()
+        for column in mapper.column_attrs
+    )
+    if not changed:
+        return
+    status_history = state.attrs.status.history
+    previous_status = (
+        status_history.deleted[0] if status_history.deleted else target.status
+    )
+    if previous_status == SnapshotStatus.READY.value:
+        raise SnapshotImmutableError("ready source snapshots are immutable")
 
 
 class AuditPolicy(UUIDPrimaryKeyMixin, TimestampMixin, Base):

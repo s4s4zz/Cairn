@@ -50,6 +50,71 @@ def _drop_snapshot_foreign_key() -> None:
     op.drop_constraint(name, "audit_runs", type_="foreignkey")
 
 
+def _create_snapshot_immutability_guard() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            sa.text(
+                """
+                CREATE FUNCTION cairn_reject_ready_source_snapshot_update()
+                RETURNS trigger AS $$
+                BEGIN
+                    IF OLD.status = 'ready' THEN
+                        RAISE EXCEPTION 'ready source snapshots are immutable'
+                            USING ERRCODE = 'check_violation';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql
+                """
+            )
+        )
+        op.execute(
+            sa.text(
+                """
+                CREATE TRIGGER trg_source_snapshots_ready_immutable
+                BEFORE UPDATE ON source_snapshots
+                FOR EACH ROW
+                EXECUTE FUNCTION cairn_reject_ready_source_snapshot_update()
+                """
+            )
+        )
+        return
+    if op.get_bind().dialect.name == "sqlite":
+        op.execute(
+            sa.text(
+                """
+                CREATE TRIGGER trg_source_snapshots_ready_immutable
+                BEFORE UPDATE ON source_snapshots
+                WHEN OLD.status = 'ready'
+                BEGIN
+                    SELECT RAISE(ABORT, 'ready source snapshots are immutable');
+                END
+                """
+            )
+        )
+
+
+def _drop_snapshot_immutability_guard() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            sa.text(
+                "DROP TRIGGER IF EXISTS "
+                "trg_source_snapshots_ready_immutable ON source_snapshots"
+            )
+        )
+        op.execute(
+            sa.text(
+                "DROP FUNCTION IF EXISTS "
+                "cairn_reject_ready_source_snapshot_update()"
+            )
+        )
+        return
+    if op.get_bind().dialect.name == "sqlite":
+        op.execute(
+            sa.text("DROP TRIGGER IF EXISTS trg_source_snapshots_ready_immutable")
+        )
+
+
 def upgrade() -> None:
     """Create the complete Java audit domain schema."""
     op.create_table('repositories',
@@ -217,6 +282,7 @@ def upgrade() -> None:
     op.create_index('ix_source_snapshots_content_sha256', 'source_snapshots', ['content_sha256'], unique=False)
     op.create_index(op.f('ix_source_snapshots_repository_id'), 'source_snapshots', ['repository_id'], unique=False)
     _create_snapshot_foreign_key()
+    _create_snapshot_immutability_guard()
     op.create_table('audit_coverage',
     sa.Column('audit_run_id', sa.Uuid(), nullable=False),
     sa.Column('modules_total', sa.Integer(), nullable=False),
@@ -407,6 +473,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove the Java audit domain schema."""
+    _drop_snapshot_immutability_guard()
     _drop_snapshot_foreign_key()
     op.drop_table('verifications')
     op.drop_table('human_reviews')

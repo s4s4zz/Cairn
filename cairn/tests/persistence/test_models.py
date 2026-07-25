@@ -7,21 +7,28 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from cairn.server.domain.enums import (
+    ArtifactAccessLevel,
+    ArtifactKind,
     AuditRunStatus,
+    BuildSystem,
     DynamicVerificationMode,
     FindingConfidence,
     FindingSeverity,
     FindingStatus,
     RuntimeVerificationStatus,
+    SnapshotStatus,
     SourceType,
 )
 from cairn.server.persistence import models  # noqa: F401
 from cairn.server.persistence.base import Base
 from cairn.server.persistence.models import (
+    Artifact,
     AuditPolicy,
     AuditRun,
     Finding,
     Repository,
+    SnapshotImmutableError,
+    SourceSnapshot,
 )
 from cairn.server.persistence.session import (
     configure_engine,
@@ -175,6 +182,71 @@ def test_finding_fingerprint_is_unique_within_a_run() -> None:
 
         with pytest.raises(IntegrityError):
             session.flush()
+
+
+def test_ready_source_snapshot_is_immutable() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine, expire_on_commit=False) as session:
+        repository = Repository(
+            name="immutable-snapshot",
+            source_type=SourceType.GIT.value,
+            remote_url="https://example.invalid/immutable.git",
+            created_by="system",
+        )
+        policy = AuditPolicy(
+            name="snapshot-policy",
+            version=1,
+            include_paths=["**"],
+            exclude_paths=[],
+            enabled_scanners=["semgrep"],
+            dynamic_verification=DynamicVerificationMode.REQUIRED.value,
+            severity_thresholds={},
+            resource_budget={},
+            active=True,
+        )
+        session.add_all([repository, policy])
+        session.flush()
+        audit_run = AuditRun(
+            repository_id=repository.id,
+            source_request={"type": "git_ref", "ref": "main"},
+            policy_id=policy.id,
+            policy_version=1,
+            status=AuditRunStatus.CREATED.value,
+            progress=0,
+            warning_count=0,
+            created_by="system",
+        )
+        session.add(audit_run)
+        session.flush()
+        artifact = Artifact(
+            audit_run_id=audit_run.id,
+            kind=ArtifactKind.SOURCE_SNAPSHOT.value,
+            storage_key="snapshots/immutable",
+            sha256="e" * 64,
+            size_bytes=10,
+            media_type="application/x-tar",
+            access_level=ArtifactAccessLevel.NORMAL.value,
+        )
+        session.add(artifact)
+        session.flush()
+        snapshot = SourceSnapshot(
+            repository_id=repository.id,
+            content_sha256="e" * 64,
+            artifact_id=artifact.id,
+            file_count=1,
+            total_bytes=10,
+            java_file_count=1,
+            build_system=BuildSystem.MAVEN.value,
+            status=SnapshotStatus.READY.value,
+        )
+        session.add(snapshot)
+        session.commit()
+
+        snapshot.java_version = "21"
+        with pytest.raises(SnapshotImmutableError):
+            session.commit()
 
 
 def test_session_scope_commits_rolls_back_and_reconfiguration_isolated() -> None:

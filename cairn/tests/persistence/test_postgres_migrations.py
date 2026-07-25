@@ -35,6 +35,7 @@ def test_initial_migration_renders_ordered_postgresql_ddl() -> None:
     )
     assert "INSERT INTO audit_policies" in ddl
     assert "'comprehensive'" in ddl
+    assert "CREATE TRIGGER trg_source_snapshots_ready_immutable" in ddl
 
 
 @pytest.mark.postgres
@@ -72,6 +73,15 @@ def test_initial_migration_upgrades_and_downgrades() -> None:
             assert (
                 connection.execute(
                     text("select count(*) from alembic_version")
+                ).scalar_one()
+                == 1
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "select count(*) from pg_trigger "
+                        "where tgname = 'trg_source_snapshots_ready_immutable'"
+                    )
                 ).scalar_one()
                 == 1
             )
