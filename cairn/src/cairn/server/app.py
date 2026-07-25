@@ -1,40 +1,58 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from cairn import __version__
-from cairn.server import db
-from cairn.server.routers import export, hints, intents, projects, settings
-
-STATIC_DIR = Path(__file__).parent / "static"
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    db.configure(db.DEFAULT_DB)
-    yield
-
-
-app = FastAPI(
-    title="Cairn",
-    description="Fact-graph based collaborative exploration protocol",
-    version=__version__,
-    lifespan=lifespan,
+from cairn.server.config import ServerSettings, get_settings
+from cairn.server.errors import register_error_handlers
+from cairn.server.persistence.session import configure_engine, dispose_engine
+from cairn.server.routers import (
+    audit_runs,
+    findings,
+    health,
+    policies,
+    repositories,
 )
 
-app.include_router(settings.router)
-app.include_router(projects.router)
-app.include_router(hints.router)
-app.include_router(intents.router)
-app.include_router(export.router)
+
+def create_app(settings: ServerSettings | None = None) -> FastAPI:
+    settings = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        configure_engine(settings.database_url, sql_echo=settings.sql_echo)
+        try:
+            yield
+        finally:
+            dispose_engine()
+
+    application = FastAPI(
+        title="Cairn Java Audit",
+        description="Single-tenant Java source code audit platform",
+        version=__version__,
+        lifespan=lifespan,
+    )
+    application.state.settings = settings
+    register_error_handlers(application)
+    application.include_router(health.router)
+    for audit_router in (
+        repositories.router,
+        policies.router,
+        audit_runs.router,
+        findings.router,
+    ):
+        application.include_router(audit_router, prefix=settings.api_prefix)
+
+    @application.get("/", tags=["service"])
+    def service_descriptor() -> dict[str, str]:
+        return {
+            "service": "Cairn Java Audit",
+            "version": __version__,
+            "api_prefix": settings.api_prefix,
+            "docs": "/docs",
+        }
+
+    return application
 
 
-@app.get("/", include_in_schema=False)
-def index():
-    return FileResponse(STATIC_DIR / "index.html")
-
-
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app = create_app()

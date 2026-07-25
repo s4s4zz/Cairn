@@ -1,13 +1,12 @@
 from collections.abc import Generator
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from cairn.server.errors import register_error_handlers
+from cairn.server.config import ServerSettings
 from cairn.server.persistence.base import Base
 from cairn.server.persistence.session import get_db_session
 
@@ -41,18 +40,15 @@ def session_factory() -> Generator[sessionmaker[Session], None, None]:
 
 
 @pytest.fixture
-def client(session_factory: sessionmaker[Session]) -> Generator[TestClient, None, None]:
-    from cairn.server.routers.audit_runs import router as audit_runs_router
-    from cairn.server.routers.findings import router as findings_router
-    from cairn.server.routers.policies import router as policies_router
-    from cairn.server.routers.repositories import router as repositories_router
+def client(
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[TestClient, None, None]:
+    database_url = "sqlite+pysqlite:///:memory:"
+    monkeypatch.setenv("CAIRN_DATABASE_URL", database_url)
+    from cairn.server.app import create_app
 
-    app = FastAPI()
-    register_error_handlers(app)
-    app.include_router(repositories_router, prefix="/api/v1")
-    app.include_router(policies_router, prefix="/api/v1")
-    app.include_router(audit_runs_router, prefix="/api/v1")
-    app.include_router(findings_router, prefix="/api/v1")
+    app = create_app(ServerSettings(database_url=database_url))
 
     def override_session() -> Generator[Session, None, None]:
         session = session_factory()

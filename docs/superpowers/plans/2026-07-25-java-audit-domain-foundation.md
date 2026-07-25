@@ -952,7 +952,7 @@ Expected: all tests pass.
 Run:
 
 ```bash
-uv run --project cairn --group dev pytest -m "not postgres" -q
+uv run --project cairn --group dev pytest cairn/tests -m "not postgres" -q
 ```
 
 Any failure caused solely by an unreachable legacy dispatcher test must be handled explicitly: either adapt its fixture away from the public app or remove the test only when it exercises removed generic protocol behavior. Do not weaken runtime, process, archive, healthcheck, cancellation, parser, or adapter tests.
@@ -1057,14 +1057,14 @@ Expected: `git diff --check` passes; no implementation placeholders appear in ch
 Run:
 
 ```bash
-uv run --project cairn --group dev pytest -m "not postgres" -q
+uv run --project cairn --group dev pytest cairn/tests -m "not postgres" -q
 ```
 
 Then start PostgreSQL and run:
 
 ```bash
 TEST_DATABASE_URL=postgresql+psycopg://cairn:cairn@127.0.0.1:55432/cairn_test \
-  uv run --project cairn --group dev pytest -m postgres -v
+  uv run --project cairn --group dev pytest cairn/tests -m postgres -v
 ```
 
 Expected: both suites pass with zero failures.
