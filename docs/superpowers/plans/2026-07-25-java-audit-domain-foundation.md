@@ -338,7 +338,12 @@ AUDIT_RUN_TRANSITIONS = {
     AuditRunStatus.DYNAMIC_VERIFYING: {AuditRunStatus.MACHINE_REVIEW, AuditRunStatus.CANCELLING, AuditRunStatus.FAILED},
     AuditRunStatus.MACHINE_REVIEW: {AuditRunStatus.HUMAN_REVIEW, AuditRunStatus.CANCELLING, AuditRunStatus.FAILED},
     AuditRunStatus.HUMAN_REVIEW: {AuditRunStatus.REPORTING, AuditRunStatus.CANCELLING, AuditRunStatus.FAILED},
-    AuditRunStatus.REPORTING: {AuditRunStatus.COMPLETED, AuditRunStatus.COMPLETED_WITH_WARNINGS, AuditRunStatus.FAILED},
+    AuditRunStatus.REPORTING: {
+        AuditRunStatus.COMPLETED,
+        AuditRunStatus.COMPLETED_WITH_WARNINGS,
+        AuditRunStatus.CANCELLING,
+        AuditRunStatus.FAILED,
+    },
     AuditRunStatus.CANCELLING: {AuditRunStatus.CANCELLED, AuditRunStatus.FAILED},
     AuditRunStatus.COMPLETED: set(),
     AuditRunStatus.COMPLETED_WITH_WARNINGS: set(),
