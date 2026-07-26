@@ -404,7 +404,7 @@ uv run --project cairn --group dev \
   pytest cairn/tests/sandbox/test_docker_integration.py -v
 ```
 
-保留的旧 Dispatcher 内部测试依赖 POSIX 进程与信号语义；完整测试套件应在 Linux 或 WSL2 中运行。
+沙箱与 Orchestrator 测试依赖 POSIX 进程与信号语义；完整测试套件应在 Linux 或 WSL2 中运行。
 
 ## License
 
