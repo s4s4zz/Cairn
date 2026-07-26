@@ -35,7 +35,13 @@ POST   /internal/v1/sandboxes/{sandbox_id}/wait
 POST   /internal/v1/sandboxes/{sandbox_id}/cancel
 POST   /internal/v1/sandboxes/{sandbox_id}/artifacts
 DELETE /internal/v1/sandboxes/{sandbox_id}
+GET    /internal/v1/sandbox-artifacts/{sha256}
 ```
+
+The artifact download route serves a collected output TAR by content address
+from the Manager-owned store. It is read-only, requires the same bearer token,
+and carries the digest as its `ETag` so the Orchestrator can verify bytes it
+did not itself collect.
 
 Creation accepts only:
 
@@ -54,9 +60,22 @@ The fixed template registry contains `analysis`, `build`, and `validation`.
 Each template owns its image, command, non-root uid/gid, network policy,
 resource defaults, and resource ceilings.
 
-The safe default for every template is no network. An administrator may bind a
-template to a pre-created, non-control Docker network through Sandbox Manager
-configuration. A request can never select or override that network.
+A template's network policy is one of three server-fixed values:
+
+- `none` — no network namespace at all (`network_mode: none`). This is the
+  `analysis` template's policy and the safe default.
+- `fixed` — a pre-created, non-control Docker network named in Sandbox Manager
+  configuration. The `build` template uses this when an administrator supplies
+  `CAIRN_SANDBOX_BUILD_NETWORK`, so Maven and Gradle can reach an approved
+  internal mirror; it falls back to `none` when unset.
+- `isolated` — the Manager creates a per-sandbox `internal: true` bridge
+  network labeled with the sandbox id, attaches only that workload, and removes
+  it during teardown and restart reconciliation. `internal: true` means no
+  route to the host or the internet; it exists so a validation workload can
+  reach sidecars in its own namespace without ever sharing a network with
+  another sandbox. The `validation` template uses this policy.
+
+A request can never select, override, or name a network under any policy.
 
 ## Container baseline
 
@@ -99,22 +118,51 @@ resources without a matching record are treated as orphans and removed.
 
 ## Failure contracts
 
-Stable errors include:
+The complete set of stable codes is:
+
+Request rejection:
 
 - `SANDBOX_UNAUTHORIZED`
 - `SANDBOX_TEMPLATE_UNKNOWN`
+- `SANDBOX_OPERATION_INVALID`
 - `SANDBOX_LIMIT_EXCEEDED`
-- `SANDBOX_CAPACITY_EXHAUSTED`
-- `SANDBOX_COLLECTION_PREPARATION_FAILED`
 - `SANDBOX_SNAPSHOT_INVALID`
+- `SANDBOX_NOT_FOUND`
 - `SANDBOX_INVALID_STATE`
+- `SANDBOX_CAPACITY_EXHAUSTED`
+
+Readiness and environment:
+
 - `SANDBOX_BACKEND_UNAVAILABLE`
 - `SANDBOX_ROOTLESS_REQUIRED`
 - `SANDBOX_RESOURCE_CONTROLS_UNAVAILABLE`
 - `SANDBOX_TEMPLATE_UNSAFE`
 - `SANDBOX_WORKSPACE_UNAVAILABLE`
-- `SANDBOX_OUTPUT_INVALID`
+- `SANDBOX_STATE_CORRUPT`
+
+Execution outcome:
+
+- `SANDBOX_START_TIMEOUT`
+- `SANDBOX_PROCESS_FAILED`
+- `SANDBOX_TIMEOUT`
+- `SANDBOX_CANCELLED`
+- `SANDBOX_DESTROYED`
+- `SANDBOX_CONTAINER_LOST`
+- `SANDBOX_MANAGER_RESTARTED`
+
+Resource enforcement:
+
+- `SANDBOX_MEMORY_LIMIT_EXCEEDED`
+- `SANDBOX_DISK_LIMIT_EXCEEDED`
+- `SANDBOX_FILE_SIZE_LIMIT_EXCEEDED`
 - `SANDBOX_OUTPUT_LIMIT_EXCEEDED`
+
+Output collection:
+
+- `SANDBOX_COLLECTION_PREPARATION_FAILED`
+- `SANDBOX_OUTPUT_INVALID`
+- `SANDBOX_ARTIFACT_WRITE_FAILED`
+- `SANDBOX_ARTIFACT_NOT_FOUND`
 
 Backend exceptions and Docker daemon responses are not returned verbatim
 because they can contain host paths, registry credentials, or daemon details.
@@ -177,19 +225,26 @@ Tests cover:
 - a real local Docker smoke test when an explicitly configured test daemon is
   available.
 
-Final verification on 2026-07-26:
+Final verification on 2026-07-26, after the legacy dispatcher deletion:
 
-- `264 passed, 5 skipped` for the complete suite with real PostgreSQL upgrade,
-  downgrade, and re-upgrade; the five skipped cases are the opt-in Docker
-  template matrix;
-- all five opt-in Docker cases passed separately: `analysis`, `build`,
-  `validation`, timeout/cancel cleanup, and a mode-`000` hostile-output case;
-  these inspect the effective Docker security configuration and post-run
-  orphan state;
-- the available local daemon was intentionally rootful: default Manager
-  readiness rejected it, while the disposable smoke test used the explicit
-  test-only override; a temporary rootless-daemon launch was also attempted
-  but stopped before daemon creation because this host lacks `newuidmap`;
+- `220 passed, 5 skipped` for the complete suite against a disposable
+  PostgreSQL 16 with real upgrade, downgrade, and re-upgrade; the five skipped
+  cases are the opt-in Docker template matrix;
+- all five opt-in Docker cases passed separately against a disposable daemon:
+  `analysis`, `build`, `validation`, timeout/cancel cleanup, and a mode-`000`
+  hostile-output case; these inspect the effective Docker security
+  configuration and post-run orphan state, and left no labeled container or
+  network behind;
+- the available local daemon was intentionally rootful, which exercised both
+  rootless defenses: `SandboxSettings` rejects the conventional host socket
+  before connecting, and the backend rejects a daemon whose `SecurityOptions`
+  omit `rootless` with `SANDBOX_ROOTLESS_REQUIRED`. With
+  `require_rootless=True` all five cases fail closed; they run only under the
+  explicit test-only override. A genuine rootless daemon remains unverified on
+  this host, which lacks `newuidmap`;
 - the Audit API, dedicated Sandbox Manager, and template images all built
   successfully; the Manager image contains neither Git nor SSH clients;
 - Compose rendering and whitespace checks passed.
+
+The earlier `264 passed` figure predates the legacy dispatcher deletion, which
+removed 82 tests belonging to that package.

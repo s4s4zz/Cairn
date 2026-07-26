@@ -254,27 +254,39 @@ terminal and every failure is represented in Coverage.
 
 ## Verification
 
-Final in-workspace verification on 2026-07-26:
+Final verification on 2026-07-26, after the legacy dispatcher deletion:
 
-- `236 passed, 6 deselected` for all non-API-`TestClient`, non-PostgreSQL,
-  non-Docker tests, including analysis, orchestration, ingestion, persistence,
-  Sandbox Manager, CLI, and Compose contracts;
-- eight additional strict API/schema tests passed without constructing a
-  `TestClient`;
+- `220 passed, 5 skipped` for the complete suite against a disposable
+  PostgreSQL 16, including analysis, orchestration, ingestion, persistence,
+  Sandbox Manager, API, CLI, and Compose contracts; the five skipped cases are
+  the opt-in Docker template matrix;
 - focused tests cover Maven, Gradle, independent mixed builds, Java indexes,
   every raw scanner format, dependency-cache location fallback, failed builds,
   cross-tool merge, task-owned Artifact idempotency, malformed-output retries,
   attempt-budget exhaustion, HTTP client errors, and start-failure cleanup;
-- PostgreSQL offline Alembic DDL includes the new columns and all three unique
-  constraints; migration inspector assertions cover the same contract when a
-  disposable PostgreSQL URL is supplied;
-- `docker compose config --quiet`, Python `compileall`, CLI help probes, and
-  `git diff --check` passed.
+- live PostgreSQL upgrade, downgrade, and re-upgrade passed; the applied schema
+  carries the new columns and all three unique constraints, matching the
+  offline Alembic DDL assertions;
+- the toolchain image built and its bundled versions match `toolchain.json`
+  exactly: JDK 17.0.19, Maven 3.9.11, Gradle 8.14.3, and Semgrep 1.130.0. Both
+  Gradle and Semgrep require the runner-supplied `HOME`/`GRADLE_USER_HOME`
+  under scratch; they fail without it because the image user has no writable
+  home by design;
+- Semgrep executed the bundled `/opt/cairn/rules/semgrep` ruleset inside the
+  image under `--network none` with a read-only source mount, reporting zero
+  errors and matching both seeded findings
+  (`cairn.java.jdbc.concatenated-query`, `cairn.java.runtime.exec`) at their
+  expected lines. This confirms the offline-rules contract;
+- all five opt-in Docker cases passed against a disposable daemon and left no
+  labeled container or network behind;
+- `docker compose config --quiet` and `git diff --check` passed.
 
-The local filesystem sandbox cannot access the Docker daemon, and the approval
-service returned HTTP 503 before either an external `TestClient` run or Docker
-image build could start. No disposable PostgreSQL service is listening in this
-workspace. Therefore the live PostgreSQL upgrade/downgrade/re-upgrade, image
-build/tool-version probe, Semgrep-in-image rule execution, and rootless Docker
-profile matrix remain environment-dependent smoke checks to rerun when those
-services are available; they are not reported as passed here.
+The earlier `236 passed` figure predates the legacy dispatcher deletion, which
+removed 82 tests belonging to that package.
+
+One environment-dependent check remains outstanding: the profile matrix has not
+run against a genuinely rootless daemon, because this host lacks `newuidmap`.
+The available daemon was rootful, so the matrix ran only under the explicit
+test-only override; with `require_rootless=True` the Manager correctly refuses
+it. The rootless path itself is therefore still unverified end to end and is not
+reported as passed.
