@@ -9,6 +9,12 @@ from cairn.server.schemas.audit_runs import (
     UploadSource,
 )
 from cairn.server.schemas.common import ErrorResponse, Page, PageMeta, StrictModel
+from cairn.server.schemas.credentials import (
+    GitCredentialCreate,
+    GitCredentialResponse,
+    HttpsTokenCredentialCreate,
+    SshKeyCredentialCreate,
+)
 from cairn.server.schemas.findings import (
     CandidateFindingCommand,
     CandidateLocation,
@@ -19,6 +25,13 @@ from cairn.server.schemas.findings import (
     FindingPage,
     FindingResponse,
     VerificationSummary,
+)
+from cairn.server.schemas.ingestion import (
+    GitSnapshotRequest,
+    SnapshotCreateRequest,
+    SourceSnapshotResponse,
+    SourceUploadResponse,
+    UploadSnapshotRequest,
 )
 from cairn.server.schemas.policies import (
     SUPPORTED_SCANNERS,
@@ -55,6 +68,9 @@ __all__ = [
     "FindingPage",
     "FindingResponse",
     "GitRefSource",
+    "GitCredentialCreate",
+    "GitCredentialResponse",
+    "GitSnapshotRequest",
     "Page",
     "PageMeta",
     "RepositoryCreate",
@@ -62,7 +78,13 @@ __all__ = [
     "RepositoryPage",
     "RepositoryResponse",
     "SourceRequest",
+    "SnapshotCreateRequest",
+    "SourceSnapshotResponse",
+    "SourceUploadResponse",
     "StrictModel",
+    "HttpsTokenCredentialCreate",
+    "SshKeyCredentialCreate",
     "UploadSource",
+    "UploadSnapshotRequest",
     "VerificationSummary",
 ]

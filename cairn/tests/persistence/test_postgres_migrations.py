@@ -36,6 +36,14 @@ def test_initial_migration_renders_ordered_postgresql_ddl() -> None:
     assert "INSERT INTO audit_policies" in ddl
     assert "'comprehensive'" in ddl
     assert "CREATE TRIGGER trg_source_snapshots_ready_immutable" in ddl
+    assert "CREATE TABLE encrypted_secrets" in ddl
+    assert "CREATE TABLE source_uploads" in ddl
+    assert "source_upload" in ddl
+    assert "ADD COLUMN scope_key VARCHAR(128)" in ddl
+    assert "ADD COLUMN sandbox_id UUID" in ddl
+    assert "uq_audit_tasks_run_scope_key" in ddl
+    assert "uq_audit_tasks_sandbox_id" in ddl
+    assert "uq_artifacts_task_sha_kind" in ddl
 
 
 @pytest.mark.postgres
@@ -68,7 +76,33 @@ def test_initial_migration_upgrades_and_downgrades() -> None:
             "audit_facts",
             "audit_intents",
             "audit_intent_sources",
+            "encrypted_secrets",
+            "source_uploads",
         } <= set(inspector.get_table_names())
+        artifact_columns = {
+            column["name"]: column for column in inspector.get_columns("artifacts")
+        }
+        assert artifact_columns["audit_run_id"]["nullable"] is True
+        artifact_uniques = {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("artifacts")
+        }
+        assert "uq_artifacts_storage_key" not in artifact_uniques
+        assert "uq_artifacts_task_sha_kind" in artifact_uniques
+        task_columns = {
+            column["name"]: column
+            for column in inspector.get_columns("audit_tasks")
+        }
+        assert task_columns["scope_key"]["nullable"] is False
+        assert task_columns["sandbox_id"]["nullable"] is True
+        task_uniques = {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("audit_tasks")
+        }
+        assert {
+            "uq_audit_tasks_run_scope_key",
+            "uq_audit_tasks_sandbox_id",
+        } <= task_uniques
         with engine.connect() as connection:
             assert (
                 connection.execute(

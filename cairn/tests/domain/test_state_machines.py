@@ -16,10 +16,12 @@ from cairn.server.domain.enums import (
     FindingConfidence,
     FindingSeverity,
     FindingStatus,
+    GitCredentialKind,
     LocationRole,
     ReviewVerdict,
     RuntimeVerificationStatus,
     SnapshotStatus,
+    SourceUploadStatus,
     SourceType,
     VerificationMethod,
     VerificationVerdict,
@@ -156,6 +158,8 @@ def test_invalid_transition_error_is_stable() -> None:
 
 def test_persisted_enum_values_match_the_design() -> None:
     assert values(SourceType) == {"git", "zip", "local_upload"}
+    assert values(SourceUploadStatus) == {"ready", "rejected", "expired"}
+    assert values(GitCredentialKind) == {"https_token", "ssh_key"}
     assert values(SnapshotStatus) == {"creating", "ready", "rejected", "failed"}
     assert values(BuildSystem) == {"maven", "gradle", "mixed", "unknown"}
     assert values(DynamicVerificationMode) == {"required", "preferred", "disabled"}
@@ -215,6 +219,7 @@ def test_persisted_enum_values_match_the_design() -> None:
         "related",
     }
     assert values(ArtifactKind) == {
+        "source_upload",
         "source_snapshot",
         "scan_result",
         "build_log",

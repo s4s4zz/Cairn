@@ -1,0 +1,45 @@
+{
+  "contract": "cairn-sandbox-toolchain-v1",
+  "bundled": {
+    "gradle": {
+      "sha256": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+      "version": "8.14.3"
+    },
+    "jdk": {
+      "distribution": "debian-bookworm-openjdk",
+      "major_version": "17"
+    },
+    "maven": {
+      "sha512": "bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978",
+      "version": "3.9.11"
+    },
+    "semgrep": {
+      "rules": "/opt/cairn/rules/semgrep",
+      "setuptools_version": "80.9.0",
+      "version": "1.130.0"
+    }
+  },
+  "administrator_provisioned": {
+    "codeql": {
+      "binary": "codeql",
+      "required_asset": "/opt/cairn/rules/codeql/java-security-and-quality.qls"
+    },
+    "dependency-check": {
+      "binary": "dependency-check.sh",
+      "required_asset": "/opt/cairn/data/dependency-check"
+    },
+    "findsecbugs": {
+      "binary": "spotbugs",
+      "required_asset": "/opt/cairn/tools/findsecbugs-plugin.jar"
+    },
+    "gitleaks": {
+      "binary": "gitleaks",
+      "required_asset": null
+    },
+    "trivy": {
+      "binary": "trivy",
+      "required_asset": "/opt/cairn/data/trivy"
+    }
+  },
+  "runtime_downloads_allowed": false
+}

@@ -19,6 +19,16 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def is_expired(value: datetime, *, now: datetime | None = None) -> bool:
+    """Compare persisted timestamps consistently across PostgreSQL and SQLite."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    comparison_time = now or utcnow()
+    if comparison_time.tzinfo is None:
+        comparison_time = comparison_time.replace(tzinfo=UTC)
+    return value <= comparison_time
+
+
 def enum_check(
     column_name: str,
     enum_type: type[StrEnum],

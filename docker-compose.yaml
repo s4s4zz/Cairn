@@ -18,6 +18,8 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    networks:
+      - cairn-control
 
   cairn-server:
     build:
@@ -27,11 +29,18 @@ services:
     environment:
       CAIRN_DATABASE_URL: postgresql+psycopg://${CAIRN_POSTGRES_USER:-cairn}:${CAIRN_POSTGRES_PASSWORD:-cairn}@cairn-postgres:5432/${CAIRN_POSTGRES_DB:-cairn}
       CAIRN_SQL_ECHO: ${CAIRN_SQL_ECHO:-false}
+      CAIRN_ARTIFACT_ROOT: /var/lib/cairn/artifacts
+      CAIRN_INGESTION_WORK_ROOT: /var/lib/cairn/ingestion
+      CAIRN_GIT_ALLOWED_HOSTS: ${CAIRN_GIT_ALLOWED_HOSTS:-}
+      CAIRN_SECRET_KEY_FILE: ${CAIRN_SECRET_KEY_FILE:-/run/secrets/cairn_master_key}
     depends_on:
       cairn-postgres:
         condition: service_healthy
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - cairn-artifact-data:/var/lib/cairn/artifacts
+      - cairn-ingestion-data:/var/lib/cairn/ingestion
     command:
       - /bin/sh
       - -ec
@@ -56,6 +65,120 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    networks:
+      - cairn-control
+
+  cairn-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cairn-audit-api:local
+    environment:
+      CAIRN_DATABASE_URL: postgresql+psycopg://${CAIRN_POSTGRES_USER:-cairn}:${CAIRN_POSTGRES_PASSWORD:-cairn}@cairn-postgres:5432/${CAIRN_POSTGRES_DB:-cairn}
+      CAIRN_SQL_ECHO: ${CAIRN_SQL_ECHO:-false}
+      CAIRN_ARTIFACT_ROOT: /var/lib/cairn/artifacts
+      CAIRN_INGESTION_WORK_ROOT: /var/lib/cairn/ingestion
+      CAIRN_GIT_ALLOWED_HOSTS: ${CAIRN_GIT_ALLOWED_HOSTS:-}
+      CAIRN_SECRET_KEY_FILE: ${CAIRN_SECRET_KEY_FILE:-/run/secrets/cairn_master_key}
+      CAIRN_SANDBOX_API_URL: http://cairn-sandbox-manager:8001
+      CAIRN_SANDBOX_AUTH_TOKEN_FILE: /run/secrets/cairn_sandbox_token
+    depends_on:
+      cairn-server:
+        condition: service_healthy
+      cairn-sandbox-manager:
+        condition: service_healthy
+    volumes:
+      - cairn-artifact-data:/var/lib/cairn/artifacts
+      - cairn-ingestion-data:/var/lib/cairn/ingestion
+      - type: bind
+        source: ${CAIRN_SANDBOX_AUTH_TOKEN_HOST_FILE:-/var/lib/cairn/secrets/sandbox-token}
+        target: /run/secrets/cairn_sandbox_token
+        read_only: true
+    command:
+      - uv
+      - run
+      - cairn
+      - orchestrate
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cairn-control
+      - cairn-sandbox-api
+
+  cairn-sandbox-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox-manager
+    image: cairn-sandbox-manager:local
+    environment:
+      CAIRN_SANDBOX_DOCKER_HOST: unix:///run/cairn-rootless-docker.sock
+      CAIRN_SANDBOX_REQUIRE_ROOTLESS: "true"
+      CAIRN_SANDBOX_AUTH_TOKEN_FILE: /run/secrets/cairn_sandbox_token
+      CAIRN_SANDBOX_ARTIFACT_ROOT: /var/lib/cairn/artifacts
+      CAIRN_SANDBOX_STATE_ROOT: /var/lib/cairn/sandbox-state
+      CAIRN_SANDBOX_WORK_ROOT: /var/lib/cairn/sandbox-work
+      CAIRN_SANDBOX_ANALYSIS_IMAGE: ${CAIRN_SANDBOX_ANALYSIS_IMAGE:-cairn-sandbox-analysis:local}
+      CAIRN_SANDBOX_BUILD_IMAGE: ${CAIRN_SANDBOX_BUILD_IMAGE:-cairn-sandbox-build:local}
+      CAIRN_SANDBOX_VALIDATION_IMAGE: ${CAIRN_SANDBOX_VALIDATION_IMAGE:-cairn-sandbox-validation:local}
+      CAIRN_SANDBOX_HELPER_IMAGE: ${CAIRN_SANDBOX_HELPER_IMAGE:-cairn-sandbox-helper:local}
+      CAIRN_SANDBOX_BUILD_NETWORK: ${CAIRN_SANDBOX_BUILD_NETWORK:-}
+    volumes:
+      - cairn-artifact-data:/var/lib/cairn/artifacts
+      - cairn-sandbox-state:/var/lib/cairn/sandbox-state
+      - type: bind
+        source: ${CAIRN_ROOTLESS_DOCKER_SOCKET:-/run/user/999/docker.sock}
+        target: /run/cairn-rootless-docker.sock
+      - type: bind
+        source: ${CAIRN_SANDBOX_HOST_WORK_ROOT:-/var/lib/cairn/sandbox-work}
+        target: /var/lib/cairn/sandbox-work
+      - type: bind
+        source: ${CAIRN_SANDBOX_AUTH_TOKEN_HOST_FILE:-/var/lib/cairn/secrets/sandbox-token}
+        target: /run/secrets/cairn_sandbox_token
+        read_only: true
+    command:
+      - uv
+      - run
+      - cairn
+      - sandbox-serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --no-access-log
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health/ready', timeout=5)
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cairn-sandbox-api
 
 volumes:
+  cairn-artifact-data:
+  cairn-ingestion-data:
   cairn-postgres-data:
+  cairn-sandbox-state:
+
+networks:
+  cairn-control:
+  cairn-sandbox-api:
+    internal: true

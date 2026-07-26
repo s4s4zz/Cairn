@@ -8,10 +8,22 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_NO_SYNC=1
 
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        git \
+        openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system cairn \
     && useradd --system --gid cairn --home-dir /home/cairn --create-home cairn \
-    && mkdir -p /cairn \
-    && chown cairn:cairn /cairn
+    && mkdir -p \
+        /cairn \
+        /var/lib/cairn/artifacts \
+        /var/lib/cairn/ingestion \
+        /var/lib/cairn/sandbox-state \
+        /var/lib/cairn/sandbox-work \
+    && chown -R cairn:cairn /cairn /var/lib/cairn
 
 WORKDIR /cairn
 USER cairn
@@ -27,5 +39,5 @@ RUN uv sync --frozen --no-dev
 
 ENV PATH="/cairn/.venv/bin:${PATH}"
 
-EXPOSE 8000
+EXPOSE 8000 8001
 CMD ["uv", "run", "cairn", "serve", "--host", "0.0.0.0", "--no-access-log"]

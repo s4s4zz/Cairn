@@ -14,6 +14,8 @@ _SCP_STYLE_SSH_URL = re.compile(r"^[^@\s]+@[^:\s]+:.+$")
 
 
 def _is_supported_git_url(value: str) -> bool:
+    if any(character.isspace() or ord(character) < 32 for character in value):
+        return False
     if _SCP_STYLE_SSH_URL.fullmatch(value):
         return True
     parsed = urlparse(value)
@@ -21,6 +23,8 @@ def _is_supported_git_url(value: str) -> bool:
         parsed.scheme not in {"https", "ssh"}
         or not parsed.hostname
         or not parsed.path
+        or parsed.query
+        or parsed.fragment
     ):
         return False
     if parsed.password is not None:

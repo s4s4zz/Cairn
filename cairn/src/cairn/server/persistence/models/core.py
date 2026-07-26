@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
@@ -270,6 +270,11 @@ class AuditTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("ix_audit_tasks_run_status", "audit_run_id", "status"),
         Index("ix_audit_tasks_status_lease", "status", "lease_expires_at"),
+        UniqueConstraint(
+            "audit_run_id",
+            "scope_key",
+            name="uq_audit_tasks_run_scope_key",
+        ),
         enum_check("type", AuditTaskType),
         enum_check("status", AuditTaskStatus),
         CheckConstraint("attempt >= 0", name="attempt_nonnegative"),
@@ -285,6 +290,11 @@ class AuditTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("audit_tasks.id", ondelete="CASCADE")
     )
     type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        default=lambda: f"task:{uuid4()}",
+    )
     scope: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
     required_capabilities: Mapped[list[str]] = mapped_column(
         JSON,
@@ -297,6 +307,7 @@ class AuditTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=AuditTaskStatus.QUEUED.value,
     )
     worker_name: Mapped[str | None] = mapped_column(String(255))
+    sandbox_id: Mapped[UUID | None] = mapped_column(unique=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=900)

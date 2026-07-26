@@ -30,17 +30,23 @@ class Artifact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "artifacts"
     __table_args__ = (
         Index("ix_artifacts_sha256", "sha256"),
+        UniqueConstraint(
+            "produced_by_task_id",
+            "sha256",
+            "kind",
+            name="uq_artifacts_task_sha_kind",
+        ),
         enum_check("kind", ArtifactKind),
         enum_check("access_level", ArtifactAccessLevel),
         CheckConstraint("size_bytes >= 0", name="size_bytes_nonnegative"),
     )
 
-    audit_run_id: Mapped[UUID] = mapped_column(
+    audit_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("audit_runs.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    storage_key: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
+    storage_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     media_type: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -54,7 +60,7 @@ class Artifact(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    audit_run: Mapped[AuditRun] = relationship(
+    audit_run: Mapped[AuditRun | None] = relationship(
         back_populates="artifacts",
         foreign_keys=[audit_run_id],
     )

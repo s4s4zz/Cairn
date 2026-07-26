@@ -1,0 +1,73 @@
+rules:
+  - id: cairn.java.jdbc.concatenated-query
+    languages:
+      - java
+    severity: ERROR
+    message: A concatenated value is passed directly to a JDBC statement.
+    metadata:
+      cwe:
+        - CWE-89
+      category: sql-injection
+      confidence: HIGH
+      technology: java
+    pattern-either:
+      - pattern: $STATEMENT.execute($QUERY + $VALUE)
+      - pattern: $STATEMENT.executeQuery($QUERY + $VALUE)
+      - pattern: $STATEMENT.executeUpdate($QUERY + $VALUE)
+
+  - id: cairn.java.runtime.exec
+    languages:
+      - java
+    severity: WARNING
+    message: A value is passed to an operating-system command execution API.
+    metadata:
+      cwe:
+        - CWE-78
+      category: command-injection
+      confidence: MEDIUM
+      technology: java
+    pattern-either:
+      - pattern: Runtime.getRuntime().exec($COMMAND)
+      - pattern: new ProcessBuilder($COMMAND, ...)
+
+  - id: cairn.java.object-deserialization
+    languages:
+      - java
+    severity: WARNING
+    message: Java native object deserialization requires an explicit trust boundary.
+    metadata:
+      cwe:
+        - CWE-502
+      category: deserialization
+      confidence: MEDIUM
+      technology: java
+    pattern: $STREAM.readObject()
+
+  - id: cairn.java.xml.external-entities-enabled
+    languages:
+      - java
+    severity: ERROR
+    message: XML external entity processing is explicitly enabled.
+    metadata:
+      cwe:
+        - CWE-611
+      category: xxe
+      confidence: HIGH
+      technology: java
+    pattern-either:
+      - pattern: $FACTORY.setFeature("http://xml.org/sax/features/external-general-entities", true)
+      - pattern: $FACTORY.setFeature("http://xml.org/sax/features/external-parameter-entities", true)
+      - pattern: $FACTORY.setFeature("http://apache.org/xml/features/disallow-doctype-decl", false)
+
+  - id: cairn.java.spel-dynamic-expression
+    languages:
+      - java
+    severity: WARNING
+    message: A dynamic value is parsed as a Spring expression.
+    metadata:
+      cwe:
+        - CWE-917
+      category: expression-injection
+      confidence: MEDIUM
+      technology: spring
+    pattern: $PARSER.parseExpression($EXPRESSION)

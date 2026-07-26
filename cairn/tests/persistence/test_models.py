@@ -54,6 +54,8 @@ EXPECTED_TABLES = {
     "audit_facts",
     "audit_intents",
     "audit_intent_sources",
+    "encrypted_secrets",
+    "source_uploads",
 }
 
 
@@ -90,6 +92,11 @@ def test_model_columns_match_core_contract() -> None:
         "started_at",
         "completed_at",
     } <= set(Base.metadata.tables["audit_runs"].columns.keys())
+    assert Base.metadata.tables["artifacts"].c.audit_run_id.nullable is True
+    assert not any(
+        constraint.name == "uq_artifacts_storage_key"
+        for constraint in Base.metadata.tables["artifacts"].constraints
+    )
 
 
 def test_run_owned_foreign_keys_cascade_and_snapshot_reference_is_restricted() -> None:

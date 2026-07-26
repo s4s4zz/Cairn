@@ -7,6 +7,17 @@ class SourceType(StrEnum):
     LOCAL_UPLOAD = "local_upload"
 
 
+class SourceUploadStatus(StrEnum):
+    READY = "ready"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class GitCredentialKind(StrEnum):
+    HTTPS_TOKEN = "https_token"
+    SSH_KEY = "ssh_key"
+
+
 class SnapshotStatus(StrEnum):
     CREATING = "creating"
     READY = "ready"
@@ -119,6 +130,7 @@ class LocationRole(StrEnum):
 
 
 class ArtifactKind(StrEnum):
+    SOURCE_UPLOAD = "source_upload"
     SOURCE_SNAPSHOT = "source_snapshot"
     SCAN_RESULT = "scan_result"
     BUILD_LOG = "build_log"

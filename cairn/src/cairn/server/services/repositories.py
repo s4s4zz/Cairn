@@ -5,7 +5,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from cairn.server.errors import ConflictError, NotFoundError
-from cairn.server.persistence.models import AuditRun, Repository
+from cairn.server.persistence.models import (
+    AuditRun,
+    EncryptedSecret,
+    Repository,
+    SourceSnapshot,
+    SourceUpload,
+)
 from cairn.server.schemas.repositories import RepositoryCreate, RepositoryFilters
 
 
@@ -14,6 +20,14 @@ class RepositoryService:
         self.session = session
 
     def create(self, request: RepositoryCreate, actor: str) -> Repository:
+        if request.credential_ref is not None:
+            credential = self.session.scalar(
+                select(EncryptedSecret.id).where(
+                    EncryptedSecret.reference == request.credential_ref
+                )
+            )
+            if credential is None:
+                raise NotFoundError("git_credential", request.credential_ref)
         duplicate = self.session.scalar(
             select(Repository.id).where(
                 func.lower(Repository.name) == request.name.casefold()
@@ -80,6 +94,26 @@ class RepositoryService:
             raise ConflictError(
                 "repository cannot be deleted while audit runs reference it",
                 error_code="repository_has_audit_runs",
+            )
+        has_snapshots = self.session.scalar(
+            select(SourceSnapshot.id)
+            .where(SourceSnapshot.repository_id == repository_id)
+            .limit(1)
+        )
+        if has_snapshots is not None:
+            raise ConflictError(
+                "repository cannot be deleted while source snapshots reference it",
+                error_code="repository_has_snapshots",
+            )
+        has_uploads = self.session.scalar(
+            select(SourceUpload.id)
+            .where(SourceUpload.repository_id == repository_id)
+            .limit(1)
+        )
+        if has_uploads is not None:
+            raise ConflictError(
+                "repository cannot be deleted while source uploads reference it",
+                error_code="repository_has_uploads",
             )
 
         self.session.delete(repository)

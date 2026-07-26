@@ -3,15 +3,20 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from cairn import __version__
+from cairn.server.artifacts.local import LocalArtifactStore
 from cairn.server.config import ServerSettings, get_settings
 from cairn.server.errors import register_error_handlers
 from cairn.server.persistence.session import configure_engine, dispose_engine
 from cairn.server.routers import (
+    artifacts,
     audit_runs,
+    credentials,
     findings,
     health,
     policies,
     repositories,
+    snapshots,
+    uploads,
 )
 
 
@@ -20,6 +25,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        settings.ingestion_work_root.mkdir(parents=True, exist_ok=True)
+        _app.state.artifact_store = LocalArtifactStore(settings.artifact_root)
         configure_engine(settings.database_url, sql_echo=settings.sql_echo)
         try:
             yield
@@ -37,6 +44,10 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     application.include_router(health.router)
     for audit_router in (
         repositories.router,
+        credentials.router,
+        uploads.router,
+        snapshots.router,
+        artifacts.router,
         policies.router,
         audit_runs.router,
         findings.router,

@@ -36,6 +36,17 @@ class InvalidStateError(DomainError):
         super().__init__(error_code, message, 409)
 
 
+class IngestionError(DomainError):
+    def __init__(
+        self,
+        error_code: str,
+        message: str,
+        *,
+        http_status: int = 422,
+    ) -> None:
+        super().__init__(error_code, message, http_status)
+
+
 def _request_id(request: Request) -> str:
     existing = getattr(request.state, "request_id", None)
     if existing:

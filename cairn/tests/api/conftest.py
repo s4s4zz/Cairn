@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
@@ -43,12 +44,23 @@ def session_factory() -> Generator[sessionmaker[Session], None, None]:
 def client(
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> Generator[TestClient, None, None]:
     database_url = "sqlite+pysqlite:///:memory:"
     monkeypatch.setenv("CAIRN_DATABASE_URL", database_url)
     from cairn.server.app import create_app
 
-    app = create_app(ServerSettings(database_url=database_url))
+    secret_key_file = tmp_path / "secret.key"
+    secret_key_file.write_bytes(b"k" * 32)
+    app = create_app(
+        ServerSettings(
+            database_url=database_url,
+            artifact_root=tmp_path / "artifacts",
+            ingestion_work_root=tmp_path / "ingestion",
+            secret_key_file=secret_key_file,
+            git_allowed_hosts=["example.invalid"],
+        )
+    )
 
     def override_session() -> Generator[Session, None, None]:
         session = session_factory()

@@ -1,0 +1,33 @@
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai \
+    UV_COMPILE_BYTECODE=1 \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_FROZEN=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_SYNC=1
+
+RUN groupadd --system cairn \
+    && useradd --system --gid cairn --home-dir /home/cairn --create-home cairn \
+    && mkdir -p \
+        /cairn \
+        /var/lib/cairn/artifacts \
+        /var/lib/cairn/sandbox-state \
+        /var/lib/cairn/sandbox-work \
+    && chown -R cairn:cairn /cairn /var/lib/cairn
+
+WORKDIR /cairn
+USER cairn
+
+COPY --chown=cairn:cairn ./cairn/pyproject.toml ./pyproject.toml
+COPY --chown=cairn:cairn ./cairn/uv.lock ./uv.lock
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY --chown=cairn:cairn ./cairn/src ./src
+RUN uv sync --frozen --no-dev
+
+ENV PATH="/cairn/.venv/bin:${PATH}"
+
+EXPOSE 8001
+CMD ["uv", "run", "cairn", "sandbox-serve", "--host", "0.0.0.0", "--port", "8001", "--no-access-log"]

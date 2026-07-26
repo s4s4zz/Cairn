@@ -9,6 +9,7 @@ from cairn.server.domain.enums import (
     AuditRunStatus,
     AuditStage,
     SnapshotStatus,
+    SourceUploadStatus,
     SourceType,
 )
 from cairn.server.domain.state_machines import InvalidTransition, transition_audit_run
@@ -22,7 +23,9 @@ from cairn.server.persistence.models import (
     AuditRun,
     Repository,
     SourceSnapshot,
+    SourceUpload,
 )
+from cairn.server.persistence.base import is_expired
 from cairn.server.schemas.audit_runs import (
     AuditRunCreate,
     AuditRunFilters,
@@ -77,6 +80,43 @@ class AuditRunService:
                     "upload source requires a ZIP or directory-upload repository",
                     error_code="source_type_mismatch",
                 )
+            upload = self.session.scalar(
+                select(SourceUpload)
+                .where(SourceUpload.id == source_request.upload_id)
+                .with_for_update()
+            )
+            if upload is None:
+                raise NotFoundError("source_upload", source_request.upload_id)
+            if upload.source_type != repository.source_type:
+                raise InvalidStateError(
+                    "upload source type does not match the repository",
+                    error_code="source_type_mismatch",
+                )
+            if upload.status != SourceUploadStatus.READY.value:
+                raise InvalidStateError(
+                    "source upload is not ready",
+                    error_code="source_upload_not_ready",
+                )
+            if (
+                upload.expires_at is not None
+                and is_expired(upload.expires_at)
+            ):
+                upload.status = SourceUploadStatus.EXPIRED.value
+                self.session.commit()
+                raise InvalidStateError(
+                    "source upload has expired",
+                    error_code="source_upload_expired",
+                )
+            if (
+                upload.repository_id is not None
+                and upload.repository_id != repository.id
+            ):
+                raise InvalidStateError(
+                    "source upload belongs to a different repository",
+                    error_code="source_upload_repository_mismatch",
+                )
+            if upload.repository_id is None:
+                upload.repository_id = repository.id
 
         audit_run = AuditRun(
             repository_id=repository.id,
