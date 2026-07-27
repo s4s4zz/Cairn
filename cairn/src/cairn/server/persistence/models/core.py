@@ -167,6 +167,27 @@ class AuditPolicy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         default=dict,
     )
+    # Per-run ceilings for the AI semantic stage: max_tasks,
+    # max_turns_per_task, max_output_tokens_per_task and an optional
+    # `categories` allowlist. Each semantic task is one model conversation, so
+    # this is the operator's cost control. See
+    # cairn.orchestrator.semantic_tasks.SemanticBudget.
+    semantic_budget: Mapped[dict[str, object]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+    # Per-run ceilings for the independent machine-review stage: max_findings,
+    # max_turns_per_task and max_output_tokens_per_task. Independent review is
+    # one model conversation per critical or high Finding, so it needs its own
+    # ceiling rather than sharing the semantic one — the two stages are sized by
+    # different things (scopes planned vs findings promoted). See
+    # cairn.orchestrator.verification.VerificationBudget.
+    verification_budget: Mapped[dict[str, object]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     audit_runs: Mapped[list[AuditRun]] = relationship(back_populates="policy")

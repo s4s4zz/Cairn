@@ -43,27 +43,54 @@ class NormalizationError(ValueError):
 
 
 class SourceCatalog:
+    """Resolve tool-claimed locations against the Snapshot.
+
+    Two callers with very different trust levels share this class. Scanner
+    adapters emit locations that are merely sloppy — a bare basename, an
+    omitted line number — and normalising those is the point. Semantic model
+    output is untrusted, and the same leniency there is a bypass: a missing
+    line number would be manufactured, and a bare basename would let the model
+    claim a precise location in a file it never opened. ``strict=True`` turns
+    the leniency off for that path.
+    """
+
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self._line_counts: dict[str, int] = {}
+        self._true_line_counts: dict[str, int] = {}
         for path in sorted(self.root.rglob("*")):
             if path.is_symlink() or not path.is_file():
                 continue
             relative = path.relative_to(self.root).as_posix()
             try:
                 with path.open("rb") as stream:
-                    count = 1
+                    newlines = 0
+                    size = 0
+                    tail = b""
                     while chunk := stream.read(1024 * 1024):
-                        count += chunk.count(b"\n")
+                        newlines += chunk.count(b"\n")
+                        size += len(chunk)
+                        tail = chunk[-1:]
             except OSError:
                 continue
-            self._line_counts[relative] = count
+            self._line_counts[relative] = newlines + 1
+            # The lenient count above over-reports by one whenever a file ends
+            # in a newline, and reports 1 for an empty file. Combined with the
+            # `+ 1` tolerance in `location` that lets a claimed line land two
+            # past real EOF, which is fine for a scanner and not fine for model
+            # output, so the true final line number is kept alongside it.
+            if size == 0:
+                self._true_line_counts[relative] = 0
+            elif tail == b"\n":
+                self._true_line_counts[relative] = newlines
+            else:
+                self._true_line_counts[relative] = newlines + 1
 
     @property
     def paths(self) -> set[str]:
         return set(self._line_counts)
 
-    def normalize_path(self, value: object) -> str:
+    def normalize_path(self, value: object, *, allow_suffix_match: bool = True) -> str:
         rendered = unquote(str(value or "").strip()).replace("\\", "/")
         if rendered.startswith("file:"):
             parsed = urlparse(rendered)
@@ -92,6 +119,12 @@ class SourceCatalog:
             raise NormalizationError("scanner location is not a relative path")
         normalized = path.as_posix()
         if normalized not in self._line_counts:
+            if not allow_suffix_match:
+                # Resolving a basename would make the platform, not the model,
+                # decide which module the evidence points at.
+                raise NormalizationError(
+                    "location must name a full path inside the Snapshot"
+                )
             suffix_matches = [
                 candidate
                 for candidate in self._line_counts
@@ -112,11 +145,22 @@ class SourceCatalog:
         end_column: object | None = None,
         symbol: object | None = None,
         role: str = "related",
+        strict: bool = False,
     ) -> dict[str, object]:
-        normalized_path = self.normalize_path(path)
-        start = _positive_int(start_line, default=1)
-        end = _positive_int(end_line, default=start)
-        if end < start or end > self._line_counts[normalized_path] + 1:
+        normalized_path = self.normalize_path(path, allow_suffix_match=not strict)
+        if strict:
+            start = _strict_positive_int(start_line, field="start_line")
+            end = (
+                start
+                if end_line is None
+                else _strict_positive_int(end_line, field="end_line")
+            )
+            ceiling = max(self._true_line_counts[normalized_path], 1)
+        else:
+            start = _positive_int(start_line, default=1)
+            end = _positive_int(end_line, default=start)
+            ceiling = self._line_counts[normalized_path] + 1
+        if end < start or end > ceiling:
             raise NormalizationError("scanner location has an invalid line range")
         result: dict[str, object] = {
             "path": normalized_path,
@@ -195,6 +239,23 @@ def _positive_int(value: object, *, default: int) -> int:
     if parsed < 1:
         raise NormalizationError("scanner location line must be positive")
     return parsed
+
+
+def _strict_positive_int(value: object, *, field: str) -> int:
+    """Require a real integer, with no coercion and no manufactured default.
+
+    ``int()`` would turn ``"15"``, ``15.0`` and ``True`` into line numbers, and
+    a missing value into line 1. For untrusted model output every one of those
+    is a claimed code location the model never had to establish.
+    """
+
+    if value is None:
+        raise NormalizationError(f"location is missing {field}")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise NormalizationError(f"location {field} must be an integer")
+    if value < 1:
+        raise NormalizationError(f"location {field} must be positive")
+    return value
 
 
 def _optional_positive_int(value: object) -> int | None:

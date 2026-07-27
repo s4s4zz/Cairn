@@ -126,7 +126,14 @@ def test_http_client_sends_only_the_closed_create_contract(tmp_path: Path) -> No
         "snapshot",
         "task_id",
         "limits",
+        "semantic",
     }
+    # The point of this assertion is what is *absent*: nothing the caller sends
+    # can choose an image, a command, an environment mapping, mounts,
+    # capabilities, devices, ports or a network. `semantic` is a typed block
+    # carrying a grant and a review scope, and it is null for every template
+    # but `semantic`.
+    assert fake_session.calls[0]["json"]["semantic"] is None
     client.close()
     assert fake_session.closed is True
 

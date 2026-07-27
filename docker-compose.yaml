@@ -82,6 +82,12 @@ services:
       CAIRN_SECRET_KEY_FILE: ${CAIRN_SECRET_KEY_FILE:-/run/secrets/cairn_master_key}
       CAIRN_SANDBOX_API_URL: http://cairn-sandbox-manager:8001
       CAIRN_SANDBOX_AUTH_TOKEN_FILE: /run/secrets/cairn_sandbox_token
+      # The Orchestrator mints model grants, so it holds the grant signing key.
+      # It deliberately does NOT hold CAIRN_LLM_API_KEY_FILE: the long-term
+      # model credential exists only inside cairn-llm-gateway (design spec
+      # §5.1 / §9.5).
+      CAIRN_LLM_GATEWAY_URL: http://cairn-llm-gateway:8002
+      CAIRN_LLM_GRANT_KEY_FILE: /run/secrets/cairn_llm_grant_key
     depends_on:
       cairn-server:
         condition: service_healthy
@@ -93,6 +99,10 @@ services:
       - type: bind
         source: ${CAIRN_SANDBOX_AUTH_TOKEN_HOST_FILE:-/var/lib/cairn/secrets/sandbox-token}
         target: /run/secrets/cairn_sandbox_token
+        read_only: true
+      - type: bind
+        source: ${CAIRN_LLM_GRANT_KEY_HOST_FILE:-/var/lib/cairn/secrets/llm-grant-key}
+        target: /run/secrets/cairn_llm_grant_key
         read_only: true
     command:
       - uv
@@ -127,7 +137,16 @@ services:
       CAIRN_SANDBOX_BUILD_IMAGE: ${CAIRN_SANDBOX_BUILD_IMAGE:-cairn-sandbox-build:local}
       CAIRN_SANDBOX_VALIDATION_IMAGE: ${CAIRN_SANDBOX_VALIDATION_IMAGE:-cairn-sandbox-validation:local}
       CAIRN_SANDBOX_HELPER_IMAGE: ${CAIRN_SANDBOX_HELPER_IMAGE:-cairn-sandbox-helper:local}
+      CAIRN_SANDBOX_SEMANTIC_IMAGE: ${CAIRN_SANDBOX_SEMANTIC_IMAGE:-cairn-sandbox-semantic:local}
       CAIRN_SANDBOX_BUILD_NETWORK: ${CAIRN_SANDBOX_BUILD_NETWORK:-}
+      # The Manager drives its OWN rootless daemon, so the Compose network
+      # `cairn-analysis-net` below is not visible to it. The operator must
+      # create an equivalent restricted network on that daemon which routes to
+      # cairn-llm-gateway:8002, exactly as for the build dependency proxy.
+      # Left unset, the semantic template has no route to the Gateway and its
+      # tasks fail with a coverage warning rather than silently reviewing
+      # nothing.
+      CAIRN_SANDBOX_SEMANTIC_NETWORK: ${CAIRN_SANDBOX_SEMANTIC_NETWORK:-}
     volumes:
       - cairn-artifact-data:/var/lib/cairn/artifacts
       - cairn-sandbox-state:/var/lib/cairn/sandbox-state
@@ -172,6 +191,71 @@ services:
     networks:
       - cairn-sandbox-api
 
+  cairn-llm-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cairn-audit-api:local
+    environment:
+      # The only place in the deployment that holds the long-term model API
+      # key (design spec §5.1 / §9.5). Workers reach it with short-lived
+      # grants signed by the grant key, which the Orchestrator also holds.
+      CAIRN_LLM_API_KEY_FILE: /run/secrets/cairn_llm_api_key
+      CAIRN_LLM_GRANT_KEY_FILE: /run/secrets/cairn_llm_grant_key
+      CAIRN_LLM_MODEL_ALLOWLIST: ${CAIRN_LLM_MODEL_ALLOWLIST:-claude-opus-5,claude-opus-4-8}
+      CAIRN_LLM_UPSTREAM_BASE_URL: ${CAIRN_LLM_UPSTREAM_BASE_URL:-https://api.anthropic.com}
+      CAIRN_LLM_MAX_REQUEST_BYTES: ${CAIRN_LLM_MAX_REQUEST_BYTES:-4194304}
+      CAIRN_LLM_MAX_OUTPUT_TOKENS: ${CAIRN_LLM_MAX_OUTPUT_TOKENS:-32000}
+      CAIRN_LLM_REQUEST_TIMEOUT_SECONDS: ${CAIRN_LLM_REQUEST_TIMEOUT_SECONDS:-600}
+      CAIRN_LLM_CIRCUIT_FAILURE_THRESHOLD: ${CAIRN_LLM_CIRCUIT_FAILURE_THRESHOLD:-5}
+      CAIRN_LLM_CIRCUIT_RESET_SECONDS: ${CAIRN_LLM_CIRCUIT_RESET_SECONDS:-60}
+      CAIRN_LLM_REFUSAL_FALLBACK: ${CAIRN_LLM_REFUSAL_FALLBACK:-true}
+    volumes:
+      - type: bind
+        source: ${CAIRN_LLM_API_KEY_HOST_FILE:-/var/lib/cairn/secrets/llm-api-key}
+        target: /run/secrets/cairn_llm_api_key
+        read_only: true
+      - type: bind
+        source: ${CAIRN_LLM_GRANT_KEY_HOST_FILE:-/var/lib/cairn/secrets/llm-grant-key}
+        target: /run/secrets/cairn_llm_grant_key
+        read_only: true
+    command:
+      - uv
+      - run
+      - cairn
+      - gateway-serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8002"
+      - --no-access-log
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health/ready', timeout=5)
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      # cairn-analysis-net is internal: it is how the semantic sandbox reaches
+      # the Gateway without gaining a route to the open internet (§9.4).
+      # cairn-llm-egress is the Gateway's own — and only — route out.
+      # Deliberately absent: cairn-control (no PostgreSQL reachability from the
+      # key holder) and cairn-sandbox-api (no Artifact Store, no Docker daemon).
+      - cairn-analysis-net
+      - cairn-llm-egress
+
 volumes:
   cairn-artifact-data:
   cairn-ingestion-data:
@@ -182,3 +266,11 @@ networks:
   cairn-control:
   cairn-sandbox-api:
     internal: true
+  # The read-only AI analysis network (design spec §9.4). Being internal is
+  # what denies the semantic reviewer the open internet: the Gateway is the
+  # only reachable egress, and it enforces grant, model and budget policy.
+  cairn-analysis-net:
+    internal: true
+  # The Gateway's dedicated route to the upstream model API. No other service
+  # attaches to it.
+  cairn-llm-egress:

@@ -1,0 +1,56 @@
+# The model-backed reviewer image (design spec §9.7).
+#
+# Hosts both the Semantic Reviewer (§7.5) and the Independent Reviewer (§7.8).
+# They have identical permissions — read-only source, the Tool Broker, the LLM
+# Gateway and nothing else — so a second image would differ only in its name.
+# `run-semantic <operation>` routes between them; see `cairn.semantic.runner`.
+#
+# Deliberately NOT built on the analysis image. That image carries a JDK,
+# Maven, Gradle and Semgrep; neither reviewer may use any of them, and §9.7
+# gives them a read-only index and bounded source snippets rather than a
+# toolchain. Every binary absent here is one the model cannot be talked into
+# running.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+# `anthropic` is the only runtime dependency, and it lives in the `semantic`
+# extra so the control-plane image never gains it. Pinned to the same range as
+# cairn/pyproject.toml.
+RUN uv pip install --system --no-cache "anthropic>=0.120,<1"
+
+RUN groupadd --gid 65532 sandbox \
+    && useradd \
+        --uid 65532 \
+        --gid 65532 \
+        --no-create-home \
+        --home-dir /nonexistent \
+        --shell /usr/sbin/nologin \
+        sandbox \
+    && mkdir -p /opt/cairn/bin /work/source /work/scratch /work/output \
+    && chown -R 65532:65532 /work/scratch /work/output
+
+COPY ./sandbox-images/semantic_runner.py /opt/cairn/bin/cairn-semantic-runner
+COPY ./cairn/src/cairn/__init__.py /opt/cairn/lib/cairn/__init__.py
+COPY ./cairn/src/cairn/analysis /opt/cairn/lib/cairn/analysis
+COPY ./cairn/src/cairn/semantic /opt/cairn/lib/cairn/semantic
+COPY ./cairn/src/cairn/verify /opt/cairn/lib/cairn/verify
+
+RUN chmod 0555 /opt/cairn/bin/cairn-semantic-runner \
+    && ln -s cairn-semantic-runner /opt/cairn/bin/run-semantic \
+    # The reviewer has no business invoking a package manager or a network
+    # client, and the base image ships several. Removing them means a
+    # prompt-injected instruction to "just fetch and run this" has nothing to
+    # reach. uv lives in /usr/local/bin on this base, not /usr/bin.
+    && rm -f \
+        /usr/local/bin/uv /usr/local/bin/uvx \
+        /usr/bin/uv /usr/bin/uvx \
+        /usr/bin/wget /usr/bin/curl \
+        /usr/local/bin/pip /usr/local/bin/pip3
+
+USER 65532:65532
+WORKDIR /work/source
+
+ENV PYTHONPATH=/opt/cairn/lib \
+    PYTHONDONTWRITEBYTECODE=1
+
+ENTRYPOINT []
+CMD ["/opt/cairn/bin/run-semantic"]

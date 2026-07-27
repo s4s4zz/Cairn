@@ -115,6 +115,27 @@ class CandidateLocation(StrictModel):
         return self
 
 
+class CallChainStep(StrictModel):
+    path: RelativePath
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    symbol: str = Field(min_length=1, max_length=1024)
+    role: Literal["entrypoint", "source", "propagation", "sink"]
+    note: str | None = Field(default=None, max_length=2048)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "CallChainStep":
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must not precede start_line")
+        return self
+
+
+class ExistingDefense(StrictModel):
+    mechanism: str = Field(min_length=1, max_length=512)
+    effective: bool
+    reasoning: str = Field(min_length=1, max_length=4096)
+
+
 class CandidateFinding(StrictModel):
     rule_id: str = Field(min_length=1, max_length=512)
     cwe_ids: list[CweId] = Field(default_factory=list)
@@ -128,8 +149,34 @@ class CandidateFinding(StrictModel):
     root_cause_key: Sha256
     discovered_by: list[str] = Field(min_length=1, max_length=16)
     source_rules: list[str] = Field(min_length=1, max_length=64)
+    call_chain: list[CallChainStep] = Field(default_factory=list, max_length=64)
+    controllability: str | None = Field(default=None, max_length=8192)
+    existing_defenses: list[ExistingDefense] = Field(
+        default_factory=list,
+        max_length=32,
+    )
+    attack_preconditions: str | None = Field(default=None, max_length=8192)
+    impact: str | None = Field(default=None, max_length=8192)
+    recommended_verification: str | None = Field(default=None, max_length=8192)
+    severity_conflict: list[dict[str, object]] = Field(
+        default_factory=list,
+        max_length=32,
+    )
 
-    @field_validator("cwe_ids", "discovered_by", "source_rules")
+    @field_validator("cwe_ids")
+    @classmethod
+    def unique_numeric_sorted_cwe_ids(cls, values: list[str]) -> list[str]:
+        # CWE ids are canonically ordered by numeric id, matching
+        # `normalize_cwe_ids`. Ordering them as plain strings would place
+        # CWE-611 before CWE-89 and reject every candidate that mixes two- and
+        # three-digit weaknesses.
+        if len(set(values)) != len(values):
+            raise ValueError("values must be sorted and unique")
+        if values != sorted(values, key=lambda value: int(value.split("-", 1)[1])):
+            raise ValueError("values must be sorted and unique")
+        return values
+
+    @field_validator("discovered_by", "source_rules")
     @classmethod
     def unique_sorted_values(cls, values: list[str]) -> list[str]:
         if values != sorted(set(values)):

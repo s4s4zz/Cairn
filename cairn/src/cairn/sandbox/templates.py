@@ -113,6 +113,11 @@ class TemplateRegistry:
             if settings.build_network is not None
             else NetworkPolicy.NONE
         )
+        semantic_policy = (
+            NetworkPolicy.FIXED
+            if settings.semantic_network is not None
+            else NetworkPolicy.NONE
+        )
         return cls(
             (
                 SandboxTemplate(
@@ -163,6 +168,33 @@ class TemplateRegistry:
                     network_name=None,
                     allowed_operations=frozenset(
                         {SandboxOperation.DEFAULT}
+                    ),
+                    defaults=defaults,
+                    ceilings=ceilings,
+                ),
+                SandboxTemplate(
+                    name=SandboxTemplateName.SEMANTIC,
+                    image=settings.semantic_image,
+                    command=("/opt/cairn/bin/run-semantic",),
+                    user="65532:65532",
+                    # FIXED, not ISOLATED: the reviewer must reach the LLM
+                    # Gateway and nothing else. An isolated per-sandbox bridge
+                    # would reach nothing at all, and NONE would make the
+                    # template useless. The operator supplies the restricted
+                    # network, exactly as for the build dependency proxy.
+                    network_policy=semantic_policy,
+                    network_name=settings.semantic_network,
+                    allowed_operations=frozenset(
+                        {
+                            SandboxOperation.DEFAULT,
+                            SandboxOperation.SEMANTIC,
+                            # The Independent Reviewer (§7.8) has the same
+                            # permissions as the Semantic Reviewer — read-only
+                            # source, the Tool Broker, the Gateway and nothing
+                            # else — so it runs on this template rather than
+                            # justifying a second image with identical rights.
+                            SandboxOperation.INDEPENDENT_VERIFY,
+                        }
                     ),
                     defaults=defaults,
                     ceilings=ceilings,

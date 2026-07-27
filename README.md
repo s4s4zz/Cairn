@@ -2,7 +2,7 @@
 
 **面向 Java 源码的单租户代码审计平台。**
 
-> 当前分支已经完成“审计领域基础”“源码与 Artifact 管理”“Sandbox Manager”和“Java 确定性分析”四个阶段：Audit Orchestrator 可以把一次运行从源码解析推进到 `semantic_auditing`，并保留构建、扫描、Coverage 和候选事实。AI 语义审计、动态验证、机器复核、认证、Web 工作台和报告仍未实现，因此尚不能完成端到端审计交付。
+> 当前分支已经完成“审计领域基础”“源码与 Artifact 管理”“Sandbox Manager”“Java 确定性分析”“AI 语义审计”五个阶段，并交付了动态验证与机器复核的第一个增量（6a）：Finding Pipeline 与独立 Agent 盲审。Audit Orchestrator 可以把一次运行从源码解析、构建、扫描、语义审计一路推进到正式 Finding、独立机器复核完成，并停在 `human_review`。多容器动态验证环境、认证、Web 工作台和报告仍未实现，因此尚不能完成端到端审计交付。模型调用的最后一跳需要运维方自备密钥，本仓库未验证。
 
 ## 产品边界
 
@@ -49,20 +49,32 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 - 每个沙箱输出在任务成功前登记为 task-owned Artifact，并把工具状态、版本、原因、候选数量和 Artifact 写入 `AuditCoverage`；
 - 确定性候选结果以 `candidate_finding` AuditFact 保存，同根因的多工具证据合并但不提前创建正式 Finding；
 - 严格请求模型、稳定错误响应、存活与就绪检查；
-- 包含 API、PostgreSQL、Orchestrator、Sandbox Manager 与持久化状态/Artifact 卷的 Docker Compose 运行环境；
-- `cairn serve`、`cairn sandbox-serve` 和 `cairn orchestrate` 三个服务入口。
+- 独立 LLM Gateway：平台唯一持有长期模型密钥的组件，校验绑定 AuditRun/Worker/模型/有效期的短期 Grant，强制模型白名单、请求与输出预算、熔断，并只允许自定义工具通过（服务端托管的 `web_search`/`web_fetch`/MCP/容器一律拒绝，否则模型侧即可绕过内部网络访问公网）；
+- 证据驱动的语义任务拆分：只在索引确实发现对应攻击面与 Sink 的模块上创建（模块 × 攻击面 × 类别）任务，例如没有 XML 解析 Sink 的模块不会产生 XXE 审计任务；任务量由 `AuditPolicy.semantic_budget` 封顶，截断会写入 Coverage 警告；
+- 专用 `semantic` 沙箱模板与镜像：不含 JDK/Maven/Gradle/Semgrep/git/curl 等构建与网络工具，Grant 与审计范围通过唯一的闭合类型化通道注入，Grant 不写入 SandboxRecord、日志或任务行；
+- 语义候选与扫描器候选按同一 `root_cause_key` 合并，调用链与可控性说明得以保留；每个范围生成一条 `AuditIntent` 交给后续动态验证认领；模型拒答记为 Coverage 缺口而非静默通过；
+- 多工具严重级冲突不再取最高值，而是保留无争议的最低级别并记录各方主张，交由验证阶段裁决（§7.6）；
+- 只读 Tool Broker 与固定 Java 审计 Prompt：系统指令与源码内容分通道传递，仓库内的 `AGENTS.md`、README 与代码注释只作为待审计数据出现在 `tool_result` 中；
+- 语义输出契约：缺少代码位置、入口到 Sink 调用链或可控性说明的模型输出一律拒绝并记录，AI 无权直接确认 Finding；
+- Finding Pipeline：候选事实经数据契约、位置校验与去重后才创建正式 `Finding`；每个位置对快照重新解析并绑定 `snapshot_sha`、附带真实代码片段，越界行号或快照中不存在的路径整条候选拒绝；没有 CWE 的候选不满足契约，记为 rejection 而非硬塞一个 CWE；`remediation` 与 OWASP 分类来自代码内的确定性映射表，不含模型主张；
+- 独立 Agent 盲审（§7.8）：严重与高危候选交由独立 Worker 复核，其线上契约只能携带类别、CWE、Sink 与代码位置，物理上无字段承载原发现者的推理、调用链或可控性说明，因此盲审的“盲”由通道强制而非靠调用方自觉；复核必须自行重建入口到 Sink 调用链，确认而无链、驳回而未指明防护措施都会降级为 `inconclusive`；
+- 验证阶段永不因故障而驳回：模型拒答、传输失败、预算耗尽、输出不可解析、沙箱未启动一律产生 `inconclusive`（§7.7），无法完成工作的复核者不能删除候选；
+- §7.8 确认规则：一次盲审确认加一个独立确定性工具的佐证即可确认（`runtime_verification=unverified`）；盲审驳回但有工具佐证、或运行时与静态结论相左，一律升给人工裁决而非自行了断；严重与高危 Finding 未经机器复核不得进入人工队列（§13.6），该闸门以 `independent_agent` Verification 行的存在为准；原发现 Worker 不能复核自己的 Finding，该检查落在服务层；
+- 包含 API、PostgreSQL、Orchestrator、Sandbox Manager、LLM Gateway 与持久化状态/Artifact 卷的 Docker Compose 运行环境；
+- `cairn serve`、`cairn sandbox-serve`、`cairn gateway-serve` 和 `cairn orchestrate` 四个服务入口，外加 `cairn semantic-smoke` 供运维方用自备密钥验证到真实模型端点的最后一跳。
 
-创建 AuditRun 后，独立 Orchestrator 会异步领取并生成确定性任务。构建或可选扫描器不可用会形成明确 Coverage 警告，而不会伪装成功；完成全部启用工具后，运行停在由下一阶段接管的 `semantic_auditing`。
+创建 AuditRun 后，独立 Orchestrator 会异步领取并生成确定性任务。构建或可选扫描器不可用会形成明确 Coverage 警告，而不会伪装成功；完成全部启用工具后进入语义审计阶段，按索引证据拆分并执行语义任务；随后候选事实提升为正式 Finding，严重与高危 Finding 经独立盲审后按 §7.8 判定，最后停在由子项目七接管的 `human_review`。语义与验证阶段的每一次失败、拒答、降级或计划截断都会记录为 Coverage 警告。
+
+6a 的动态验证阶段按 §7.7 记录 `inconclusive` 与 `runtime_verification=unverified`：这不是占位，而是规格明确要求的“环境缺失只能产生 inconclusive、不能产生 rejected”。6b 会把其中一部分裁决变成真实的运行时结论。
 
 ## 尚未实现
 
 以下能力属于后续独立实施阶段，不应从当前版本中推断为可用：
 
-1. AI 语义审计、审计意图生成与跨模块数据流推理；
-2. 候选事实到正式 Finding 的机器复核、状态推进和误报处理；
-3. 动态验证服务栈、执行期密钥代理与独立验证复核；
-4. 本地认证、Vue 审计工作台、人工复核和报告导出；
-5. 内核级目录配额、Nexus 出口策略、seccomp/AppArmor、备份恢复、MinIO/S3、OIDC 和 Kubernetes 执行后端等生产加固。
+1. 多容器动态验证环境（增量 6b）：临时构建与验证环境、受支持的 PostgreSQL/MySQL/Redis/HTTP 回显依赖、应用启动探测、测试与最小 PoC、运行时证据收集，以及沙箱销毁后目标服务不可达的校验。在此之前 `runtime_verification` 只会是 `unverified` 或 `not_applicable`，永不为 `verified`；
+2. 执行期密钥代理；
+3. 本地认证、Vue 审计工作台、人工复核和报告导出；
+4. 内核级目录配额、Nexus 出口策略、seccomp/AppArmor、备份恢复、MinIO/S3、OIDC 和 Kubernetes 执行后端等生产加固。
 
 完整目标设计与实施记录见：
 
@@ -71,6 +83,10 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 - [源码与 Artifact 管理实施记录](docs/superpowers/plans/2026-07-26-java-audit-source-artifact-management.md)
 - [Sandbox Manager 实施记录](docs/superpowers/plans/2026-07-26-java-audit-sandbox-manager.md)
 - [Java 确定性分析实施记录](docs/superpowers/plans/2026-07-26-java-audit-deterministic-analysis.md)
+- [LLM Gateway 与语义输出契约实施记录](docs/superpowers/plans/2026-07-26-java-audit-semantic-gateway.md)
+- [语义审计执行实施记录](docs/superpowers/plans/2026-07-27-java-audit-semantic-execution.md)
+- [Finding Pipeline 与独立机器复核实施记录](docs/superpowers/plans/2026-07-27-java-audit-finding-pipeline.md)
+- [语义审计执行实施记录](docs/superpowers/plans/2026-07-27-java-audit-semantic-execution.md)
 
 ## 运行要求
 
@@ -95,7 +111,7 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 
 ## 使用 Docker Compose 启动
 
-默认配置会启动 `cairn-postgres`、`cairn-server`、`cairn-orchestrator` 和 `cairn-sandbox-manager`。API 自动执行 Alembic 迁移且只暴露到宿主机 `127.0.0.1:8000`；Sandbox Manager 使用独立镜像和内部网络，没有宿主机端口，也不包含 API 镜像中的 Git/SSH 客户端。只有 Orchestrator 同时连接数据库网络和 Sandbox API 网络并持有内部 Bearer Token，Audit API 无法直接调用 Manager。
+默认配置会启动 `cairn-postgres`、`cairn-server`、`cairn-orchestrator`、`cairn-sandbox-manager` 和 `cairn-llm-gateway`。API 自动执行 Alembic 迁移且只暴露到宿主机 `127.0.0.1:8000`；Sandbox Manager 使用独立镜像和内部网络，没有宿主机端口，也不包含 API 镜像中的 Git/SSH 客户端。只有 Orchestrator 同时连接数据库网络和 Sandbox API 网络并持有内部 Bearer Token，Audit API 无法直接调用 Manager。LLM Gateway 同样不发布宿主机端口，只接入内部 `cairn-analysis-net` 和专用出口网络 `cairn-llm-egress`，并要求挂载长期模型密钥与 Grant 签名密钥两个只读密钥文件。
 
 Sandbox Manager 不连接普通宿主机 Docker，也不在 Compose 内启动 privileged DinD。完整启动前必须先按 Docker 官方 rootless 模式为 Cairn 配置一个专用 daemon，并确保其 socket、工作目录和 Manager 容器内的 `cairn` 用户使用兼容的 UID/GID 或 ACL。然后设置实际路径：
 
@@ -124,6 +140,8 @@ docker build -f sandbox-images/Dockerfile \
 docker tag cairn-sandbox-analysis:local cairn-sandbox-build:local
 docker tag cairn-sandbox-analysis:local cairn-sandbox-validation:local
 docker tag cairn-sandbox-analysis:local cairn-sandbox-helper:local
+docker build -f sandbox-images/Dockerfile.semantic \
+  -t cairn-sandbox-semantic:local .
 unset DOCKER_HOST
 ```
 
@@ -138,6 +156,7 @@ Profile 与模板配对为服务端闭集：
 | `analysis` | `inventory`、`semgrep`、`dependency-check`、`trivy`、`gitleaks`、`config-rules` | Inventory、Semgrep、配置规则可直接使用；其余需要离线资产 |
 | `build` | `build`、`codeql`、`findsecbugs` | Maven/Gradle 构建可直接使用；CodeQL、FindSecBugs 需要离线资产 |
 | `validation` | `default` | 当前只保留模板契约探针，动态验证属于后续阶段 |
+| `semantic` | `semantic` | 需单独构建 `cairn-sandbox-semantic:local`，并由运维方配置到 LLM Gateway 的受限网络 |
 
 ```bash
 docker compose up -d --build
@@ -375,6 +394,13 @@ Compose 部署应通过只读 Docker Secret 或 Compose override 将密钥挂载
 - 调用方不能提交镜像、命令、环境变量、宿主机路径、挂载、设备、Capability、端口或网络模式；
 - analysis 模板无网络；build 默认无网络且只能由管理员绑定固定依赖代理网络；validation 使用 Manager 创建的隔离网络；
 - 扫描器只能使用镜像内置规则和离线数据库，缺失资产显式标记为 `unavailable`；
+- 长期模型 API Key 只存在于 LLM Gateway：Worker 仅持有绑定 AuditRun/Worker/模型/有效期的短期 Grant，Gateway 在出口替换真实密钥，且不记录 Prompt 正文、响应内容或密钥；
+- Gateway 同时接入内部 `cairn-analysis-net` 与专用出口网络 `cairn-llm-egress`，但不接入 `cairn-control`，因此既不可达 PostgreSQL 也不可达 Artifact Store；上游 origin 在非 loopback 情况下强制 HTTPS，且出口不跟随重定向；
+- 语义审计代理与独立复核代理都只能使用只读 Tool Broker 提供的闭集工具，没有 Shell、写权限和通用网络；仓库内的代理指令文件、代码注释、测试数据和构建日志一律按不可信数据处理；
+- 独立复核代理拿不到原发现者的推理：其线上契约（`VerifyCandidateSpec`）只声明类别、CWE、Sink、模块与代码位置五类字段并禁止额外字段，因此任何携带 `message`/`call_chain`/`controllability` 的请求都是校验错误；原发现 Worker 不得复核同一 Finding，严重与高危 Finding 未经机器复核不得进入人工队列；
+- `semantic` 镜像不含 JDK、Maven、Gradle、Semgrep、git、curl、wget、uv 和 pip；Grant 与审计范围只能经由唯一的闭合类型化请求块进入容器，容器内的 runner 在构造客户端后立即从环境中删除 Grant；
+- Sandbox Manager 不持有长期模型密钥；Orchestrator 只持有 Grant 签名密钥，不持有模型 API Key；
+- 语义沙箱所在网络由运维方在沙箱专用 daemon 上创建；未配置时该模板没有出口，任务失败并记录 Coverage 警告，而不会在无审计的情况下继续；
 - 取消、超时、磁盘超限和 Manager 重启都会执行输出收集与受管资源回收。
 
 认证、权限控制和外部网络暴露必须在后续加固阶段完成后再启用。

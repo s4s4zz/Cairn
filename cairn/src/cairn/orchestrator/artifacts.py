@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from cairn.analysis.contracts import AnalysisManifest, AnalysisOperation
 from cairn.sandbox.contracts import SandboxArtifact
+from cairn.semantic.contracts import SemanticReviewResult
+from cairn.verify.contracts import VerifyResult
 from cairn.server.artifacts import ArtifactStore
 from cairn.server.domain.enums import ArtifactAccessLevel, ArtifactKind
 from cairn.server.persistence.models import Artifact, AuditTask
@@ -83,6 +85,104 @@ class SandboxArtifactRegistrar:
         *,
         expected_operation: AnalysisOperation,
     ) -> AnalysisManifest:
+        manifest_bytes, seen = self._read_output_member(
+            artifact,
+            "manifest.json",
+            missing_code="ANALYSIS_MANIFEST_MISSING",
+            invalid_code="ANALYSIS_MANIFEST_INVALID",
+        )
+        try:
+            manifest = AnalysisManifest.model_validate_json(manifest_bytes)
+        except ValidationError as exc:
+            raise OrchestratorError(
+                "ANALYSIS_MANIFEST_INVALID",
+                "Analysis manifest failed contract validation",
+            ) from exc
+        if manifest.operation is not expected_operation:
+            raise OrchestratorError(
+                "ANALYSIS_OPERATION_MISMATCH",
+                "Analysis manifest does not match its AuditTask",
+            )
+        if not set(manifest.raw_result_paths).issubset(seen):
+            raise OrchestratorError(
+                "ANALYSIS_MANIFEST_INVALID",
+                "Analysis manifest references a missing raw result",
+            )
+        return manifest
+
+    def load_semantic_result(
+        self,
+        artifact: Artifact,
+        *,
+        expected_scope_key: str,
+    ) -> SemanticReviewResult:
+        """Read a `cairn-semantic-result-v1` out of a collected output TAR.
+
+        Shares the hardened member walk with `load_manifest`: the reviewer's
+        output is no more trusted than a scanner's, so the same entry-count,
+        path-safety and size limits apply.
+        """
+
+        payload, _seen = self._read_output_member(
+            artifact,
+            "semantic-result.json",
+            missing_code="SEMANTIC_RESULT_MISSING",
+            invalid_code="SEMANTIC_RESULT_INVALID",
+        )
+        try:
+            result = SemanticReviewResult.model_validate_json(payload)
+        except ValidationError as exc:
+            raise OrchestratorError(
+                "SEMANTIC_RESULT_INVALID",
+                "Semantic result failed contract validation",
+            ) from exc
+        if result.scope_key != expected_scope_key:
+            raise OrchestratorError(
+                "SEMANTIC_SCOPE_MISMATCH",
+                "Semantic result does not match its AuditTask",
+            )
+        return result
+
+    def load_verify_result(
+        self,
+        artifact: Artifact,
+        *,
+        expected_root_cause_key: str,
+    ) -> VerifyResult:
+        """Read a `cairn-verify-result-v1` out of a collected output TAR.
+
+        Same hardened member walk as the other loaders: the blind reviewer's
+        output is model-derived and no more trusted than a scanner's.
+        """
+
+        payload, _seen = self._read_output_member(
+            artifact,
+            "verify-result.json",
+            missing_code="VERIFY_RESULT_MISSING",
+            invalid_code="VERIFY_RESULT_INVALID",
+        )
+        try:
+            result = VerifyResult.model_validate_json(payload)
+        except ValidationError as exc:
+            raise OrchestratorError(
+                "VERIFY_RESULT_INVALID",
+                "Verification result failed contract validation",
+            ) from exc
+        if result.root_cause_key != expected_root_cause_key:
+            raise OrchestratorError(
+                "VERIFY_CANDIDATE_MISMATCH",
+                "Verification result does not match its AuditTask",
+            )
+        return result
+
+    def _read_output_member(
+        self,
+        artifact: Artifact,
+        member_name: str,
+        *,
+        missing_code: str,
+        invalid_code: str,
+    ) -> tuple[bytes, set[str]]:
         try:
             archive_path = self.artifact_store.resolve(
                 artifact.storage_key,
@@ -90,7 +190,7 @@ class SandboxArtifactRegistrar:
                 expected_size=artifact.size_bytes,
             )
             with tarfile.open(archive_path, mode="r:") as archive:
-                manifest_bytes: bytes | None = None
+                found: bytes | None = None
                 seen: set[str] = set()
                 entries = 0
                 total_bytes = 0
@@ -120,23 +220,23 @@ class SandboxArtifactRegistrar:
                             "ANALYSIS_OUTPUT_INVALID",
                             "Analysis output exceeds the read limit",
                         )
-                    if member.name == "manifest.json":
+                    if member.name == member_name:
                         if member.size > _MAX_MANIFEST_BYTES:
                             raise OrchestratorError(
-                                "ANALYSIS_MANIFEST_INVALID",
-                                "Analysis manifest exceeds the read limit",
+                                invalid_code,
+                                "Sandbox result exceeds the read limit",
                             )
                         stream = archive.extractfile(member)
                         if stream is None:
                             raise OrchestratorError(
-                                "ANALYSIS_MANIFEST_INVALID",
-                                "Analysis manifest cannot be read",
+                                invalid_code,
+                                "Sandbox result cannot be read",
                             )
-                        manifest_bytes = stream.read(_MAX_MANIFEST_BYTES + 1)
-                if manifest_bytes is None:
+                        found = stream.read(_MAX_MANIFEST_BYTES + 1)
+                if found is None:
                     raise OrchestratorError(
-                        "ANALYSIS_MANIFEST_MISSING",
-                        "Analysis output does not contain a manifest",
+                        missing_code,
+                        "Sandbox output does not contain the expected result",
                     )
         except OrchestratorError:
             raise
@@ -145,21 +245,4 @@ class SandboxArtifactRegistrar:
                 "ANALYSIS_OUTPUT_INVALID",
                 "Analysis output is not a valid TAR Artifact",
             ) from exc
-        try:
-            manifest = AnalysisManifest.model_validate_json(manifest_bytes)
-        except ValidationError as exc:
-            raise OrchestratorError(
-                "ANALYSIS_MANIFEST_INVALID",
-                "Analysis manifest failed contract validation",
-            ) from exc
-        if manifest.operation is not expected_operation:
-            raise OrchestratorError(
-                "ANALYSIS_OPERATION_MISMATCH",
-                "Analysis manifest does not match its AuditTask",
-            )
-        if not set(manifest.raw_result_paths).issubset(seen):
-            raise OrchestratorError(
-                "ANALYSIS_MANIFEST_INVALID",
-                "Analysis manifest references a missing raw result",
-            )
-        return manifest
+        return found, seen

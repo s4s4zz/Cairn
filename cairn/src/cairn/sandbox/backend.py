@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 from uuid import UUID
 
 from cairn.sandbox.contracts import SandboxLimits
@@ -45,6 +45,7 @@ class SandboxContainerBackend(Protocol):
         template: SandboxTemplate,
         limits: SandboxLimits,
         workspace: SandboxWorkspace,
+        credentials: Mapping[str, str] | None = None,
     ) -> None: ...
 
     def start(self, sandbox_id: UUID) -> None: ...

@@ -33,7 +33,15 @@ class SandboxSettings(BaseSettings):
     build_image: str = "cairn-sandbox-build:local"
     validation_image: str = "cairn-sandbox-validation:local"
     helper_image: str = "cairn-sandbox-helper:local"
+    semantic_image: str = "cairn-sandbox-semantic:local"
     build_network: str | None = None
+    # The network on the sandbox daemon that routes to the LLM Gateway. The
+    # Manager drives its own rootless daemon, so the Compose network
+    # `cairn-analysis-net` is not visible to it — the operator has to create an
+    # equivalent one here, exactly as for the build dependency proxy. Left
+    # unset, the semantic template has no route to the Gateway and its tasks
+    # fail with a coverage warning instead of silently reviewing nothing.
+    semantic_network: str | None = None
 
     @field_validator("docker_host")
     @classmethod
@@ -50,6 +58,7 @@ class SandboxSettings(BaseSettings):
         "build_image",
         "validation_image",
         "helper_image",
+        "semantic_image",
     )
     @classmethod
     def validate_image(cls, value: str) -> str:
@@ -58,7 +67,7 @@ class SandboxSettings(BaseSettings):
             raise ValueError("sandbox image names must be non-empty single tokens")
         return value
 
-    @field_validator("build_network")
+    @field_validator("build_network", "semantic_network")
     @classmethod
     def validate_build_network(cls, value: str | None) -> str | None:
         if value is None:
@@ -67,7 +76,9 @@ class SandboxSettings(BaseSettings):
         if not value:
             return None
         if value.lower() in {"host", "bridge", "default", "none"}:
-            raise ValueError("build_network must be a dedicated restricted network")
+            raise ValueError(
+                "a sandbox network must be a dedicated restricted network"
+            )
         if (
             len(value) > 128
             or not value[0].isalnum()
@@ -76,7 +87,7 @@ class SandboxSettings(BaseSettings):
                 for character in value
             )
         ):
-            raise ValueError("build_network has an invalid name")
+            raise ValueError("sandbox network has an invalid name")
         return value
 
     @model_validator(mode="after")

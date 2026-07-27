@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import Mapping
 from uuid import UUID
 
 import docker
@@ -26,6 +27,22 @@ _TEMPLATE_LABEL = "cairn.sandbox.template"
 _RESOURCE_LABEL = "cairn.sandbox.resource"
 _NAME_PREFIX = "cairn-sandbox-"
 _NETWORK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+# The complete set of variable names the Manager will ever place in a sandbox.
+# Callers supply values through typed request blocks, never keys, so no request
+# can introduce a name outside this set.
+_CREDENTIAL_KEYS = frozenset({"CAIRN_LLM_GRANT_TOKEN", "CAIRN_LLM_GATEWAY_URL"})
+
+
+def _environment(
+    sandbox_id: UUID,
+    credentials: Mapping[str, str] | None,
+) -> dict[str, str]:
+    environment = {"CAIRN_SANDBOX_ID": str(sandbox_id)}
+    for key, value in (credentials or {}).items():
+        if key not in _CREDENTIAL_KEYS:
+            raise BackendFailure("SANDBOX_BACKEND_UNAVAILABLE")
+        environment[key] = value
+    return environment
 
 
 class RootlessDockerBackend:
@@ -74,6 +91,7 @@ class RootlessDockerBackend:
         template: SandboxTemplate,
         limits: SandboxLimits,
         workspace: SandboxWorkspace,
+        credentials: Mapping[str, str] | None = None,
     ) -> None:
         self._validate_workspace(workspace)
         self._validate_template_image(template.image)
@@ -135,7 +153,7 @@ class RootlessDockerBackend:
                 str(workspace.scratch): {"bind": "/work/scratch", "mode": "rw"},
                 str(workspace.output): {"bind": "/work/output", "mode": "rw"},
             },
-            "environment": {"CAIRN_SANDBOX_ID": str(sandbox_id)},
+            "environment": _environment(sandbox_id, credentials),
             "labels": {**labels, _RESOURCE_LABEL: "container"},
             "ulimits": [
                 Ulimit(name="nofile", soft=1024, hard=1024),

@@ -29,6 +29,7 @@ from cairn.server.domain.enums import (
     AuditFactKind,
     AuditRunStatus,
     AuditTaskStatus,
+    AuditTaskType,
     BuildSystem,
     DynamicVerificationMode,
     SnapshotStatus,
@@ -383,8 +384,10 @@ def test_build_failure_continues_source_scans_and_records_coverage(
         sandbox,
     ).process_run(audit_run.id)
 
-    assert result.status == AuditRunStatus.SEMANTIC_AUDITING.value
-    assert result.progress == 60
+    # 6a carries the run through promotion, dynamic verification and machine
+    # review in one pass; it parks at human_review, which subproject 7 owns.
+    assert result.status == AuditRunStatus.HUMAN_REVIEW.value
+    assert result.progress == 90
     coverage = db_session.get(AuditCoverage, audit_run.id)
     assert coverage is not None
     assert coverage.build_status == "failed"
@@ -401,7 +404,18 @@ def test_build_failure_continues_source_scans_and_records_coverage(
     assert tools["dependency-check"]["status"] == "unavailable"
     assert tools["trivy"]["reason_code"] == "SCANNER_ASSET_UNAVAILABLE"
     assert tools["gitleaks"]["reason_code"] == "SCANNER_BINARY_UNAVAILABLE"
-    assert result.warning_count == len(coverage.coverage_warnings) == 6
+    # The seventh is the semantic stage: this fixture has real entrypoints,
+    # so a review is planned, and with no LLM grant signing key configured
+    # it fails closed and is reported as a coverage gap rather than skipped.
+    # The eighth is the dynamic stage reporting, per §7.7, that no runtime
+    # environment existed — an inconclusive verdict, never a rejection.
+    assert result.warning_count == len(coverage.coverage_warnings) == 8
+    assert {
+        warning["reason_code"] for warning in coverage.coverage_warnings
+    } >= {"DYNAMIC_ENVIRONMENT_UNAVAILABLE"}
+    assert {
+        warning["reason_code"] for warning in coverage.coverage_warnings
+    } >= {"SEMANTIC_GRANT_KEY_UNAVAILABLE"}
 
     tasks = list(
         db_session.scalars(
@@ -410,7 +424,11 @@ def test_build_failure_continues_source_scans_and_records_coverage(
             .order_by(AuditTask.scope_key)
         )
     )
-    assert len(tasks) == 9
+    # Nine deterministic profiles plus one planned semantic review.
+    assert len(tasks) == 10
+    assert sum(
+        task.type == AuditTaskType.SEMANTIC_REVIEW.value for task in tasks
+    ) == 1
     assert sum(task.status == AuditTaskStatus.SKIPPED.value for task in tasks) == 2
     assert {
         request.operation.value for request in sandbox.requests
@@ -478,7 +496,10 @@ def test_completed_deterministic_stage_is_idempotent(
         sandbox,
     ).process_run(audit_run.id)
 
-    assert result.status == AuditRunStatus.SEMANTIC_AUDITING.value
+    # `semantic_auditing` is now a resumable branch rather than a parking
+    # spot, so the run carries on to human_review. What must not happen is a
+    # re-run of the deterministic profiles that already succeeded.
+    assert result.status == AuditRunStatus.HUMAN_REVIEW.value
     assert sandbox.requests == []
 
 
@@ -546,7 +567,7 @@ def test_transient_scanner_failure_retries_and_preserves_attempt_artifacts(
 
     second = orchestrator.process_run(audit_run.id)
 
-    assert second.status == AuditRunStatus.SEMANTIC_AUDITING.value
+    assert second.status == AuditRunStatus.HUMAN_REVIEW.value
     db_session.refresh(task)
     assert task.status == AuditTaskStatus.SUCCEEDED.value
     assert task.attempt == 2
@@ -612,7 +633,7 @@ def test_invalid_manifest_retries_and_preserves_attempt_artifact(
 
     second = orchestrator.process_run(audit_run.id)
 
-    assert second.status == AuditRunStatus.SEMANTIC_AUDITING.value
+    assert second.status == AuditRunStatus.HUMAN_REVIEW.value
     db_session.refresh(inventory_task)
     assert inventory_task.status == AuditTaskStatus.SUCCEEDED.value
     assert inventory_task.attempt == 2
@@ -708,7 +729,7 @@ def test_invalid_scanner_manifest_stops_at_attempt_budget_with_coverage(
 
     assert first_status == AuditRunStatus.STATIC_SCANNING.value
     assert second_status == AuditRunStatus.STATIC_SCANNING.value
-    assert third_status == AuditRunStatus.SEMANTIC_AUDITING.value
+    assert third_status == AuditRunStatus.HUMAN_REVIEW.value
     task = db_session.scalar(
         select(AuditTask).where(
             AuditTask.audit_run_id == audit_run.id,

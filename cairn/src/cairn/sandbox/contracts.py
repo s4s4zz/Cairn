@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -13,6 +21,21 @@ StorageKey = Annotated[
     str,
     StringConstraints(pattern=r"^sha256/[0-9a-f]{2}/[0-9a-f]{64}$"),
 ]
+# base64url(payload).base64url(mac), as minted by cairn.gateway.tokens.
+GrantToken = Annotated[
+    str,
+    StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{1,256}$"),
+]
+# A snapshot-relative POSIX path. Kept deliberately narrow: these are index
+# hints rendered into an operator-channel message, not paths the Manager opens.
+RelativePath = Annotated[
+    str,
+    StringConstraints(pattern=r"^[^/\\][^\\]{0,1023}$"),
+]
+# Re-declared locally rather than imported from `cairn.analysis.contracts`, for
+# the same reason as `SnapshotArtifact`: the Sandbox Manager depends on no
+# analysis or semantic module.
+CweId = Annotated[str, StringConstraints(pattern=r"^CWE-[1-9][0-9]{0,5}$")]
 
 
 class StrictModel(BaseModel):
@@ -23,6 +46,7 @@ class SandboxTemplateName(StrEnum):
     ANALYSIS = "analysis"
     BUILD = "build"
     VALIDATION = "validation"
+    SEMANTIC = "semantic"
 
 
 class SandboxOperation(StrEnum):
@@ -36,6 +60,8 @@ class SandboxOperation(StrEnum):
     TRIVY = "trivy"
     GITLEAKS = "gitleaks"
     CONFIG_RULES = "config-rules"
+    SEMANTIC = "semantic"
+    INDEPENDENT_VERIFY = "independent-verify"
 
 
 class SandboxStatus(StrEnum):
@@ -126,12 +152,143 @@ class SandboxLimits(StrictModel):
         return self
 
 
+class SemanticScopeSpec(StrictModel):
+    """One semantic review assignment, as it crosses the Sandbox API.
+
+    Deliberately a local wire type rather than an import of
+    ``cairn.semantic.findings.ReviewScope``: this package re-declares every
+    shape it accepts (see :class:`SnapshotArtifact`) so the Sandbox Manager
+    stays independent of the analysis and semantic packages. The in-container
+    runner parses the file back into a real ``ReviewScope``.
+    """
+
+    module: str = Field(min_length=1, max_length=1024)
+    attack_surface: str = Field(min_length=1, max_length=255)
+    category: str = Field(min_length=1, max_length=255)
+    scope_key: str = Field(min_length=1, max_length=128)
+    entrypoint_paths: list[RelativePath] = Field(default_factory=list, max_length=64)
+
+    @field_validator("entrypoint_paths")
+    @classmethod
+    def reject_traversal(cls, value: list[str]) -> list[str]:
+        # These are never opened here, only rendered into the assignment the
+        # reviewer reads. A hint that reads `../../etc/passwd` is not something
+        # the index produces, so accepting one would only launder an
+        # attacker-supplied string into a platform-authored message.
+        for path in value:
+            if any(part in {"", ".", ".."} for part in path.split("/")):
+                raise ValueError("entrypoint hints must be plain relative paths")
+        return value
+
+
+class VerifyLocationSpec(StrictModel):
+    """One reported code location, as the blind reviewer is allowed to see it."""
+
+    path: RelativePath
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    symbol: str | None = Field(default=None, max_length=1024)
+    role: Literal["entrypoint", "source", "propagation", "sink", "related"]
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "VerifyLocationSpec":
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must not precede start_line")
+        if any(part in {"", ".", ".."} for part in self.path.split("/")):
+            raise ValueError("location path must be a plain relative path")
+        return self
+
+
+class VerifyCandidateSpec(StrictModel):
+    """The candidate an Independent Reviewer is given (§7.8).
+
+    §7.8 says the independent worker "只获得候选类别、源码位置和必要上下文，并
+    自行重建调用链" — it receives the category, the code locations and the
+    necessary context, and rebuilds the call chain itself. It must not read the
+    reporting worker's free-form reasoning.
+
+    That rule is enforced by this shape rather than by the caller's discipline.
+    ``StrictModel`` forbids extra fields, and there is no field here for
+    ``message``, ``controllability``, ``call_chain``, ``attack_preconditions``,
+    ``impact`` or ``existing_defenses``. A request carrying any of them is a
+    validation error, so the blindness cannot be lost by someone filling in one
+    more field that looked helpful.
+    """
+
+    root_cause_key: Sha256
+    module: str = Field(min_length=1, max_length=1024)
+    category: str = Field(min_length=1, max_length=255)
+    cwe_ids: list[CweId] = Field(default_factory=list, max_length=16)
+    sink: str | None = Field(default=None, max_length=1024)
+    locations: list[VerifyLocationSpec] = Field(min_length=1, max_length=64)
+
+
+class SemanticSandboxSpec(StrictModel):
+    """The credential and assignment a model-backed review needs to run.
+
+    This is the *only* way anything caller-supplied reaches the container
+    environment. It is a closed, typed block rather than a free-form
+    environment mapping, so the request schema keeps refusing caller-chosen
+    variables (design spec §9.7).
+
+    Exactly one assignment is carried: a ``scope`` for the Semantic Reviewer or
+    a ``candidate`` for the Independent Reviewer. Which one is required is
+    decided by :class:`SandboxCreateRequest`, which knows the operation.
+    """
+
+    grant_token: GrantToken
+    gateway_url: str = Field(min_length=1, max_length=2048)
+    scope: SemanticScopeSpec | None = None
+    candidate: VerifyCandidateSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_spec(self) -> "SemanticSandboxSpec":
+        if (self.scope is None) == (self.candidate is None):
+            raise ValueError(
+                "a semantic block carries exactly one of scope or candidate"
+            )
+        parsed = urlsplit(self.gateway_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("gateway_url must be an HTTP(S) service origin")
+        return self
+
+
 class SandboxCreateRequest(StrictModel):
     template: SandboxTemplateName
     operation: SandboxOperation = SandboxOperation.DEFAULT
     snapshot: SnapshotArtifact
     task_id: UUID | None = None
     limits: SandboxLimitsOverride = Field(default_factory=SandboxLimitsOverride)
+    semantic: SemanticSandboxSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_semantic_block(self) -> "SandboxCreateRequest":
+        # Required for the semantic template and refused for every other one,
+        # so no other template can be handed a model credential.
+        wants_semantic = self.template is SandboxTemplateName.SEMANTIC
+        if wants_semantic and self.semantic is None:
+            raise ValueError("the semantic template requires a semantic block")
+        if not wants_semantic and self.semantic is not None:
+            raise ValueError("only the semantic template accepts a semantic block")
+        if self.semantic is None:
+            return self
+        # The assignment has to match the operation. A verify candidate handed
+        # to a semantic review would be audited as a scope; a review scope
+        # handed to a blind reviewer would leave it with nothing to verify.
+        verifying = self.operation is SandboxOperation.INDEPENDENT_VERIFY
+        if verifying and self.semantic.candidate is None:
+            raise ValueError("independent-verify requires a candidate assignment")
+        if not verifying and self.semantic.scope is None:
+            raise ValueError("a semantic review requires a scope assignment")
+        return self
 
 
 class SandboxWaitRequest(StrictModel):

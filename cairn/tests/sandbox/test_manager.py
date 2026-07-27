@@ -27,6 +27,7 @@ class FakeBackend:
     def __init__(self) -> None:
         self.states: dict[UUID, BackendState] = {}
         self.workspaces: dict[UUID, SandboxWorkspace] = {}
+        self.credentials: dict[UUID, dict[str, str]] = {}
         self.cancelled: list[UUID] = []
         self.destroyed: list[UUID] = []
         self.validated = False
@@ -37,8 +38,11 @@ class FakeBackend:
             raise BackendFailure(self.readiness_error)
         self.validated = True
 
-    def create(self, sandbox_id, template, limits, workspace) -> None:  # noqa: ANN001
+    def create(  # noqa: ANN001
+        self, sandbox_id, template, limits, workspace, credentials=None
+    ) -> None:
         del template, limits
+        self.credentials[sandbox_id] = dict(credentials or {})
         self.states[sandbox_id] = BackendState(BackendContainerStatus.CREATED)
         self.workspaces[sandbox_id] = workspace
 

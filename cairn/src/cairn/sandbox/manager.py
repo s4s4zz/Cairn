@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 import logging
 import os
 from pathlib import Path
@@ -34,6 +35,10 @@ from cairn.sandbox.state import FileSandboxStateStore
 from cairn.sandbox.templates import TemplateRegistry
 from cairn.server.artifacts.base import ArtifactStoreError
 from cairn.server.artifacts.local import LocalArtifactStore
+
+# The fixed path the in-container semantic runner reads its assignment from.
+SEMANTIC_SCOPE_FILENAME = "cairn-semantic-scope.json"
+VERIFY_CANDIDATE_FILENAME = "cairn-verify-candidate.json"
 
 
 LOG = logging.getLogger(__name__)
@@ -117,7 +122,14 @@ class SandboxManager:
                     max_file_bytes=self.settings.max_snapshot_bytes,
                 ),
             )
-            self.backend.create(sandbox_id, template, limits, workspace)
+            self._write_semantic_scope(workspace, request)
+            self.backend.create(
+                sandbox_id,
+                template,
+                limits,
+                workspace,
+                self._credentials(request),
+            )
         except SandboxError:
             self._remove_workspace(workspace.root)
             raise
@@ -578,6 +590,62 @@ class SandboxManager:
             media_type="application/x-tar",
         )
         return record.model_copy(update={"artifacts": [artifact]})
+
+    def _write_semantic_scope(
+        self,
+        workspace: SandboxWorkspace,
+        request: SandboxCreateRequest,
+    ) -> None:
+        """Place the assignment where the in-container runner reads it.
+
+        Scratch, not output: output is collected as an Artifact, and the
+        assignment is an input. Assignments are the only files the Manager ever
+        writes into a workspace, and their shapes are fixed by
+        ``SemanticScopeSpec`` and ``VerifyCandidateSpec``, so this is not a
+        general caller-controlled file channel. In particular
+        ``VerifyCandidateSpec`` has no field for the reporting worker's
+        reasoning, so no blind-review assignment can carry it (§7.8).
+        """
+
+        if request.semantic is None:
+            return
+        if request.semantic.candidate is not None:
+            assignment = request.semantic.candidate
+            filename = VERIFY_CANDIDATE_FILENAME
+        else:
+            assert request.semantic.scope is not None
+            assignment = request.semantic.scope
+            filename = SEMANTIC_SCOPE_FILENAME
+        payload = json.dumps(
+            assignment.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        target = workspace.scratch / filename
+        try:
+            target.write_text(payload, encoding="utf-8")
+            os.chmod(target, 0o444)
+        except OSError as exc:
+            raise SandboxError(
+                "SANDBOX_WORKSPACE_UNAVAILABLE",
+                "Sandbox workspace could not be prepared",
+                http_status=503,
+            ) from exc
+
+    def _credentials(self, request: SandboxCreateRequest) -> dict[str, str] | None:
+        """The grant, handed straight to the backend and kept out of state.
+
+        It is deliberately not copied onto the `SandboxRecord`: the record is
+        persisted, returned by `GET /internal/v1/sandboxes/{id}` and logged by
+        the Orchestrator, none of which should ever hold a live credential.
+        """
+
+        if request.semantic is None:
+            return None
+        return {
+            "CAIRN_LLM_GRANT_TOKEN": request.semantic.grant_token,
+            "CAIRN_LLM_GATEWAY_URL": request.semantic.gateway_url,
+        }
 
     def _create_workspace(self, sandbox_id: UUID) -> SandboxWorkspace:
         workspace = self._workspace(sandbox_id)
