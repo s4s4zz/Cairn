@@ -512,8 +512,9 @@ def index_source(root: Path) -> dict[str, object]:
 
 
 def build_inventory(root: Path) -> dict[str, object]:
+    from cairn.analysis.buildplan import detect_build_plan
     from cairn.analysis.project import detect_project
 
     project = detect_project(root)
     index = index_source(root)
-    return {**project, **index}
+    return {**project, **index, "runtime_plan": detect_build_plan(root).as_payload()}

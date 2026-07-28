@@ -2,7 +2,7 @@
 
 **面向 Java 源码的单租户代码审计平台。**
 
-> 当前分支已经完成“审计领域基础”“源码与 Artifact 管理”“Sandbox Manager”“Java 确定性分析”“AI 语义审计”五个阶段，并交付了动态验证与机器复核的第一个增量（6a）：Finding Pipeline 与独立 Agent 盲审。Audit Orchestrator 可以把一次运行从源码解析、构建、扫描、语义审计一路推进到正式 Finding、独立机器复核完成，并停在 `human_review`。多容器动态验证环境、认证、Web 工作台和报告仍未实现，因此尚不能完成端到端审计交付。模型调用的最后一跳需要运维方自备密钥，本仓库未验证。
+> 当前分支已经完成“审计领域基础”“源码与 Artifact 管理”“Sandbox Manager”“Java 确定性分析”“AI 语义审计”五个阶段，以及“动态验证与机器复核”的 6a、6b 两个增量：Finding Pipeline、独立 Agent 盲审、多容器动态验证环境与确定性探针。Audit Orchestrator 可以把一次运行从源码解析、构建打包、扫描、语义审计推进到正式 Finding、真实运行时验证与独立机器复核，并停在 `human_review`。模型生成的 PoC（6c）、认证、Web 工作台和报告仍未实现，因此尚不能完成端到端审计交付。模型调用的最后一跳需要运维方自备密钥，本仓库未验证。
 
 ## 产品边界
 
@@ -59,6 +59,10 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 - Finding Pipeline：候选事实经数据契约、位置校验与去重后才创建正式 `Finding`；每个位置对快照重新解析并绑定 `snapshot_sha`、附带真实代码片段，越界行号或快照中不存在的路径整条候选拒绝；没有 CWE 的候选不满足契约，记为 rejection 而非硬塞一个 CWE；`remediation` 与 OWASP 分类来自代码内的确定性映射表，不含模型主张；
 - 独立 Agent 盲审（§7.8）：严重与高危候选交由独立 Worker 复核，其线上契约只能携带类别、CWE、Sink 与代码位置，物理上无字段承载原发现者的推理、调用链或可控性说明，因此盲审的“盲”由通道强制而非靠调用方自觉；复核必须自行重建入口到 Sink 调用链，确认而无链、驳回而未指明防护措施都会降级为 `inconclusive`；
 - 验证阶段永不因故障而驳回：模型拒答、传输失败、预算耗尽、输出不可解析、沙箱未启动一律产生 `inconclusive`（§7.7），无法完成工作的复核者不能删除候选；
+- 一次性动态验证环境：从只读 Snapshot 起隔离网络（`internal: true`）、目标应用与受支持依赖服务（PostgreSQL / MySQL / Redis / HTTP 回显），依赖服务按闭集 `ServiceKind` 由服务端固定镜像、端口、用户与 tmpfs，调用方只能报 kind；目标应用作为 runner 子进程启动，销毁沙箱即销毁应用；创建中途失败整组回滚，销毁后校验无残留容器与网络；
+- 确定性差分探针：SQL 注入与路径穿越看响应差异，SSRF 与 XXE 靠带 nonce 的带外命中（发请求的是应用本身，无需解读响应），命令注入用时延盲测——注入的命令跑在刻意不含 HTTP 客户端的验证容器里，回连不出去；**只有真正跑过且没发现差异的探针才会 `rejected`**，路由未知、类别不支持、应用未就绪、传输失败一律 `inconclusive`（§7.7）；
+- 构建计划探测只读应用自身的 Spring 配置决定启动哪些依赖，**不解析仓库内的 docker-compose**——那等于让仓库决定平台跑什么容器；也只在 Spring 自己查找的位置读取，测试夹具里的 `application.yml` 不算；
+- 运行时证据：请求、响应、耗时、应用日志与退出状态按 §7.7 保存为 `Evidence` 与 `RUNTIME_LOG` / `POC` Artifact；
 - §7.8 确认规则：一次盲审确认加一个独立确定性工具的佐证即可确认（`runtime_verification=unverified`）；盲审驳回但有工具佐证、或运行时与静态结论相左，一律升给人工裁决而非自行了断；严重与高危 Finding 未经机器复核不得进入人工队列（§13.6），该闸门以 `independent_agent` Verification 行的存在为准；原发现 Worker 不能复核自己的 Finding，该检查落在服务层；
 - 包含 API、PostgreSQL、Orchestrator、Sandbox Manager、LLM Gateway 与持久化状态/Artifact 卷的 Docker Compose 运行环境；
 - `cairn serve`、`cairn sandbox-serve`、`cairn gateway-serve` 和 `cairn orchestrate` 四个服务入口，外加 `cairn semantic-smoke` 供运维方用自备密钥验证到真实模型端点的最后一跳。
@@ -71,7 +75,7 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 
 以下能力属于后续独立实施阶段，不应从当前版本中推断为可用：
 
-1. 多容器动态验证环境（增量 6b）：临时构建与验证环境、受支持的 PostgreSQL/MySQL/Redis/HTTP 回显依赖、应用启动探测、测试与最小 PoC、运行时证据收集，以及沙箱销毁后目标服务不可达的校验。在此之前 `runtime_verification` 只会是 `unverified` 或 `not_applicable`，永不为 `verified`；
+1. 模型生成的 PoC（增量 6c）：6b 的探针由平台按类别固定编写，覆盖 SQL 注入、路径穿越、SSRF、XXE 与命令注入；authorization、反序列化、模板注入、表达式注入等类别目前一律 `inconclusive` 并写明原因，不伪装成已验证；
 2. 执行期密钥代理；
 3. 本地认证、Vue 审计工作台、人工复核和报告导出；
 4. 内核级目录配额、Nexus 出口策略、seccomp/AppArmor、备份恢复、MinIO/S3、OIDC 和 Kubernetes 执行后端等生产加固。
@@ -86,6 +90,7 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 - [LLM Gateway 与语义输出契约实施记录](docs/superpowers/plans/2026-07-26-java-audit-semantic-gateway.md)
 - [语义审计执行实施记录](docs/superpowers/plans/2026-07-27-java-audit-semantic-execution.md)
 - [Finding Pipeline 与独立机器复核实施记录](docs/superpowers/plans/2026-07-27-java-audit-finding-pipeline.md)
+- [动态验证与确定性探针实施记录](docs/superpowers/plans/2026-07-28-java-audit-dynamic-verification.md)
 - [语义审计执行实施记录](docs/superpowers/plans/2026-07-27-java-audit-semantic-execution.md)
 
 ## 运行要求
@@ -110,6 +115,8 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 正式运行数据库仅支持 PostgreSQL。SQLite 只用于快速单元测试和迁移兼容性检查。
 
 ## 使用 Docker Compose 启动
+
+动态验证的依赖容器（PostgreSQL / MySQL / Redis / HTTP 回显）**不在 Compose 里**：它们由 Sandbox Manager 在自己的 rootless daemon 上按需创建、随沙箱销毁。运维方需要在该 daemon 上预拉取 `postgres:16-alpine`、`mysql:8`、`redis:7-alpine`，并构建 `cairn-sandbox-validation` 镜像；缺失时动态验证以 `inconclusive` 降级而不是失败。
 
 默认配置会启动 `cairn-postgres`、`cairn-server`、`cairn-orchestrator`、`cairn-sandbox-manager` 和 `cairn-llm-gateway`。API 自动执行 Alembic 迁移且只暴露到宿主机 `127.0.0.1:8000`；Sandbox Manager 使用独立镜像和内部网络，没有宿主机端口，也不包含 API 镜像中的 Git/SSH 客户端。只有 Orchestrator 同时连接数据库网络和 Sandbox API 网络并持有内部 Bearer Token，Audit API 无法直接调用 Manager。LLM Gateway 同样不发布宿主机端口，只接入内部 `cairn-analysis-net` 和专用出口网络 `cairn-llm-egress`，并要求挂载长期模型密钥与 Grant 签名密钥两个只读密钥文件。
 
@@ -401,6 +408,8 @@ Compose 部署应通过只读 Docker Secret 或 Compose override 将密钥挂载
 - `semantic` 镜像不含 JDK、Maven、Gradle、Semgrep、git、curl、wget、uv 和 pip；Grant 与审计范围只能经由唯一的闭合类型化请求块进入容器，容器内的 runner 在构造客户端后立即从环境中删除 Grant；
 - Sandbox Manager 不持有长期模型密钥；Orchestrator 只持有 Grant 签名密钥，不持有模型 API Key；
 - 语义沙箱所在网络由运维方在沙箱专用 daemon 上创建；未配置时该模板没有出口，任务失败并记录 Coverage 警告，而不会在无审计的情况下继续；
+- 动态验证网络为 `internal: true`：组内目标应用与依赖服务互通，组外不可达互联网、控制面、宿主机与云元数据地址（169.254.169.254），该属性由跑在真实 Docker daemon 上的集成测试双向验证；
+- 依赖服务镜像声明的每个 `VOLUME` 必须被 spec 里的 tmpfs 覆盖，否则拒绝创建——未覆盖的卷会生成 Manager 生命周期之外的匿名卷，数据会比沙箱活得久；
 - 取消、超时、磁盘超限和 Manager 重启都会执行输出收集与受管资源回收。
 
 认证、权限控制和外部网络暴露必须在后续加固阶段完成后再启用。

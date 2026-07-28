@@ -267,6 +267,7 @@ def test_the_caller_still_cannot_choose_an_image_command_mount_or_network() -> N
         "task_id",
         "limits",
         "semantic",
+        "dynamic",
     }
 
 

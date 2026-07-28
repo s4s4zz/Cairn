@@ -200,4 +200,81 @@ def execute_build(
         status = "partial"
     else:
         status = "failed"
-    return {"status": status, "steps": steps}
+    return {
+        "status": status,
+        "steps": steps,
+        "runnable_artifacts": _collect_runnable_artifacts(
+            work_source,
+            output_root,
+            project["build_plan"],
+        ),
+    }
+
+
+# Archives a JVM can be handed to `java -jar`. Sources and javadoc jars are the
+# usual false positives and are excluded by name.
+_ARCHIVE_SUFFIXES = (".jar", ".war")
+_EXCLUDED_ARCHIVE_MARKERS = ("-sources.", "-javadoc.", "-tests.", "-plain.")
+_MAX_RUNNABLE_ARTIFACTS = 64
+_MAX_RUNNABLE_BYTES = 512 * 1024 * 1024
+
+
+def _collect_runnable_artifacts(
+    work_source: Path,
+    output_root: Path,
+    build_plan: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Copy the archives each module produced into the collected output.
+
+    The build runs in a writable copy under scratch, which is discarded with the
+    sandbox; anything the dynamic verifier is going to run has to travel out
+    through `/work/output` like every other piece of evidence.
+
+    Gradle's Spring Boot plugin emits both an executable `bootJar` and a
+    `-plain.jar`; the plain one has no main class and is excluded by name so the
+    verifier is not handed an archive that cannot start.
+    """
+
+    destination = output_root / "artifacts"
+    collected: list[dict[str, object]] = []
+    total_bytes = 0
+    for step in build_plan:
+        module_path = str(step["module_path"])
+        build_system = str(step["build_system"])
+        module_root = work_source if module_path == "." else work_source / module_path
+        search_root = (
+            module_root / "target"
+            if build_system == "maven"
+            else module_root / "build" / "libs"
+        )
+        if not search_root.is_dir():
+            continue
+        for archive in sorted(search_root.iterdir()):
+            if len(collected) >= _MAX_RUNNABLE_ARTIFACTS:
+                return collected
+            if not archive.is_file() or archive.is_symlink():
+                continue
+            if archive.suffix not in _ARCHIVE_SUFFIXES:
+                continue
+            if any(marker in archive.name for marker in _EXCLUDED_ARCHIVE_MARKERS):
+                continue
+            size = archive.stat().st_size
+            if total_bytes + size > _MAX_RUNNABLE_BYTES:
+                return collected
+            relative = f"artifacts/{module_path.replace('/', '_')}_{archive.name}"
+            target = output_root / relative
+            try:
+                destination.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(archive, target)
+            except OSError:
+                continue
+            total_bytes += size
+            collected.append(
+                {
+                    "module_path": module_path,
+                    "path": relative,
+                    "build_system": build_system,
+                    "size_bytes": size,
+                }
+            )
+    return collected

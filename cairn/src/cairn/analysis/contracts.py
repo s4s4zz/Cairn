@@ -245,12 +245,30 @@ class PathClassification(StrictModel):
     kind: str = Field(min_length=1, max_length=64)
 
 
+class RuntimePlan(StrictModel):
+    """What the application needs at runtime, for dynamic verification (§7.7).
+
+    Distinct from ``build_plan``, which is the sequence of build commands.
+    ``services`` names members of the closed dependency set the Sandbox Manager
+    is willing to start; an unrecognised datasource yields nothing rather than
+    a guess, which downgrades verification to inconclusive.
+    """
+
+    services: list[Literal["postgres", "mysql", "redis", "echo"]] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    app_port: int = Field(default=8080, ge=1, le=65535)
+    config_paths: list[RelativePath] = Field(default_factory=list, max_length=32)
+
+
 class InventoryResult(StrictModel):
     build_system: Literal["maven", "gradle", "mixed", "unknown"]
     java_versions: list[str] = Field(default_factory=list)
     modules: list[ModuleRecord]
     module_dependencies: list[ModuleDependency]
     build_plan: list[BuildStep]
+    runtime_plan: RuntimePlan = Field(default_factory=RuntimePlan)
     symbols: list[SymbolRecord]
     entrypoints: list[EntrypointRecord]
     permissions: list[PermissionRecord]
@@ -272,9 +290,29 @@ class BuildStepResult(StrictModel):
     reason_code: str | None = Field(default=None, max_length=128)
 
 
+class RunnableArtifact(StrictModel):
+    """A build output the dynamic verifier can actually start (§7.7).
+
+    Recorded per module so a multi-module repository can name which archive is
+    the application rather than leaving the verifier to guess among several.
+    """
+
+    module_path: str = Field(min_length=1, max_length=1024)
+    path: RelativePath
+    build_system: Literal["maven", "gradle"]
+    size_bytes: int = Field(ge=0)
+
+
 class BuildResult(StrictModel):
     status: Literal["success", "partial", "failed"]
     steps: list[BuildStepResult]
+    # Empty when the build failed or produced no archive, which is exactly the
+    # §7.3 case where dynamic verification is marked unavailable rather than
+    # attempted.
+    runnable_artifacts: list[RunnableArtifact] = Field(
+        default_factory=list,
+        max_length=64,
+    )
 
 
 class AnalysisManifest(StrictModel):

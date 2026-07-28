@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from collections.abc import Sequence
 from typing import Mapping
 from uuid import UUID
 
@@ -18,6 +19,7 @@ from cairn.sandbox.backend import (
 )
 from cairn.sandbox.config import SandboxSettings
 from cairn.sandbox.contracts import SandboxLimits
+from cairn.sandbox.services import ServiceCatalogue, ServiceKind, ServiceSpec
 from cairn.sandbox.templates import NetworkPolicy, SandboxTemplate
 
 
@@ -56,6 +58,7 @@ class RootlessDockerBackend:
     ) -> None:
         self.settings = settings
         self._work_root = settings.work_root.resolve()
+        self._services = ServiceCatalogue.from_settings(settings)
         self._client = client or docker.DockerClient(
             base_url=settings.docker_host,
             timeout=10,
@@ -92,6 +95,7 @@ class RootlessDockerBackend:
         limits: SandboxLimits,
         workspace: SandboxWorkspace,
         credentials: Mapping[str, str] | None = None,
+        services: Sequence[ServiceKind] = (),
     ) -> None:
         self._validate_workspace(workspace)
         self._validate_template_image(template.image)
@@ -115,6 +119,21 @@ class RootlessDockerBackend:
             network_name = template.network_name
             if network_name is None or _NETWORK_NAME.fullmatch(network_name) is None:
                 raise BackendFailure("SANDBOX_BACKEND_UNAVAILABLE")
+
+        if services:
+            # A dependency service is only meaningful on a network the task
+            # container shares, and only an isolated one keeps it unreachable
+            # from anywhere else (§9.4).
+            if not dynamic_network or network_name is None:
+                raise BackendFailure("SANDBOX_SERVICES_REQUIRE_ISOLATED_NETWORK")
+            try:
+                self._create_services(sandbox_id, labels, network_name, services)
+            except BackendFailure:
+                # Roll the whole group back: a half-built environment would let
+                # a probe run against a dependency that never started.
+                self._remove_services(sandbox_id)
+                self._remove_network(sandbox_id)
+                raise
 
         create_options: dict[str, object] = {
             "name": self._container_name(sandbox_id),
@@ -174,8 +193,110 @@ class RootlessDockerBackend:
             self._client.containers.create(template.image, **create_options)
         except DockerException as exc:
             if dynamic_network:
+                self._remove_services(sandbox_id)
                 self._remove_network(sandbox_id)
             raise BackendFailure("SANDBOX_BACKEND_UNAVAILABLE") from exc
+
+    def _create_services(
+        self,
+        sandbox_id: UUID,
+        labels: Mapping[str, str],
+        network_name: str,
+        services: Sequence[ServiceKind],
+    ) -> None:
+        """Start the dependency containers the task will talk to.
+
+        Started here rather than in `start()` because the task container's
+        first act is to wait for them: a service that only exists once the task
+        is running has already lost the race.
+
+        Every one runs under the §9.3 baseline. The specs come from the closed
+        catalogue, so nothing a caller sent chooses an image, a command, a port
+        or an environment variable.
+        """
+
+        for kind in dict.fromkeys(services):
+            spec = self._services.get(kind)
+            self._validate_service_image(spec)
+            try:
+                container = self._client.containers.create(
+                    spec.image,
+                    name=self._service_name(sandbox_id, kind),
+                    command=list(spec.command) or None,
+                    user=spec.user,
+                    read_only=True,
+                    cap_drop=["ALL"],
+                    security_opt=["no-new-privileges:true"],
+                    privileged=False,
+                    ipc_mode="none",
+                    cgroupns="private",
+                    network=network_name,
+                    pids_limit=spec.pids,
+                    mem_limit=spec.memory_bytes,
+                    memswap_limit=spec.memory_bytes,
+                    nano_cpus=spec.cpu_millis * 1_000_000,
+                    init=True,
+                    stdin_open=False,
+                    tty=False,
+                    restart_policy={"Name": "no"},
+                    healthcheck={"test": ["NONE"]},
+                    tmpfs=dict(spec.tmpfs),
+                    environment=dict(spec.environment),
+                    labels={**labels, _RESOURCE_LABEL: "service"},
+                    ulimits=[
+                        Ulimit(name="nofile", soft=1024, hard=1024),
+                        Ulimit(name="core", soft=0, hard=0),
+                    ],
+                )
+                container.start()
+            except DockerException as exc:
+                raise BackendFailure("SANDBOX_SERVICE_UNAVAILABLE") from exc
+
+    def _remove_services(self, sandbox_id: UUID) -> None:
+        """Remove every dependency container belonging to this sandbox.
+
+        Selected by label rather than by remembering what was started, so a
+        Manager restart between create and destroy still reclaims them.
+        """
+
+        try:
+            containers = self._client.containers.list(
+                all=True,
+                filters={
+                    "label": [
+                        f"{_MANAGED_LABEL}=true",
+                        f"{_ID_LABEL}={sandbox_id}",
+                        f"{_RESOURCE_LABEL}=service",
+                    ]
+                },
+            )
+        except DockerException as exc:
+            raise BackendFailure("SANDBOX_BACKEND_UNAVAILABLE") from exc
+        for container in containers:
+            try:
+                container.remove(force=True)
+            except NotFound:
+                continue
+            except DockerException as exc:
+                raise BackendFailure("SANDBOX_BACKEND_UNAVAILABLE") from exc
+
+    def service_hosts(
+        self,
+        sandbox_id: UUID,
+        services: Sequence[ServiceKind],
+    ) -> dict[str, str]:
+        """The hostname and port the task container should use per service.
+
+        Returned to the Manager so it can hand them to the task through the
+        typed request block. Container names on a user-defined bridge resolve
+        by DNS, so no network alias is needed and nothing has to guess.
+        """
+
+        hosts: dict[str, str] = {}
+        for kind in dict.fromkeys(services):
+            spec = self._services.get(kind)
+            hosts[kind.value] = f"{self._service_name(sandbox_id, kind)}:{spec.port}"
+        return hosts
 
     def start(self, sandbox_id: UUID) -> None:
         container = self._require_container(sandbox_id)
@@ -225,6 +346,9 @@ class RootlessDockerBackend:
 
     def destroy(self, sandbox_id: UUID) -> None:
         self._remove_helper(sandbox_id)
+        # Services first: removing the network while a container is still
+        # attached fails, and the task container is what holds the evidence.
+        self._remove_services(sandbox_id)
         container = self._get_container(sandbox_id)
         if container is not None:
             try:
@@ -369,6 +493,32 @@ class RootlessDockerBackend:
         if config.get("Volumes"):
             raise BackendFailure("SANDBOX_TEMPLATE_UNSAFE")
 
+    def _validate_service_image(self, spec: "ServiceSpec") -> None:
+        """Every volume a dependency image declares must be covered by tmpfs.
+
+        Task-template images are refused outright when they declare a
+        ``VOLUME`` (`_validate_template_image`), because Docker would create an
+        anonymous volume outside the Manager's lifecycle and real data would
+        outlive the sandbox. Official database images always declare one for
+        their data directory, so that rule would ban every one of them.
+
+        The property that actually matters is that nothing durable is created,
+        and a tmpfs mount over the declared path gives exactly that: the mount
+        takes precedence, the data lives in memory, and it disappears with the
+        container. A declared volume the spec does *not* cover is still refused
+        — that one would leak.
+        """
+
+        try:
+            image = self._client.images.get(spec.image)
+        except DockerException as exc:
+            raise BackendFailure("SANDBOX_SERVICE_IMAGE_UNAVAILABLE") from exc
+        config = (getattr(image, "attrs", {}) or {}).get("Config", {}) or {}
+        declared = set(config.get("Volumes") or {})
+        covered = set(spec.tmpfs)
+        if declared - covered:
+            raise BackendFailure("SANDBOX_SERVICE_VOLUME_UNCOVERED")
+
     def _get_container(self, sandbox_id: UUID):  # noqa: ANN202
         try:
             container = self._client.containers.get(
@@ -465,3 +615,7 @@ class RootlessDockerBackend:
     @staticmethod
     def _helper_name(sandbox_id: UUID) -> str:
         return f"{_NAME_PREFIX}helper-{sandbox_id}"
+
+    @staticmethod
+    def _service_name(sandbox_id: UUID, kind: ServiceKind) -> str:
+        return f"{_NAME_PREFIX}svc-{kind.value}-{sandbox_id}"

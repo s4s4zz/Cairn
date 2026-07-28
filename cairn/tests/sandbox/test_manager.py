@@ -28,6 +28,7 @@ class FakeBackend:
         self.states: dict[UUID, BackendState] = {}
         self.workspaces: dict[UUID, SandboxWorkspace] = {}
         self.credentials: dict[UUID, dict[str, str]] = {}
+        self.services: dict[UUID, tuple] = {}
         self.cancelled: list[UUID] = []
         self.destroyed: list[UUID] = []
         self.validated = False
@@ -39,12 +40,16 @@ class FakeBackend:
         self.validated = True
 
     def create(  # noqa: ANN001
-        self, sandbox_id, template, limits, workspace, credentials=None
+        self, sandbox_id, template, limits, workspace, credentials=None, services=()
     ) -> None:
         del template, limits
         self.credentials[sandbox_id] = dict(credentials or {})
+        self.services[sandbox_id] = tuple(services)
         self.states[sandbox_id] = BackendState(BackendContainerStatus.CREATED)
         self.workspaces[sandbox_id] = workspace
+
+    def service_hosts(self, sandbox_id: UUID, services) -> dict[str, str]:  # noqa: ANN001
+        return {kind.value: f"cairn-sandbox-svc-{kind.value}:1" for kind in services}
 
     def start(self, sandbox_id: UUID) -> None:
         self.states[sandbox_id] = BackendState(BackendContainerStatus.RUNNING)

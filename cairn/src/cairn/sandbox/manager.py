@@ -23,6 +23,7 @@ from cairn.sandbox.backend import (
     SandboxWorkspace,
 )
 from cairn.sandbox.config import SandboxSettings
+from cairn.sandbox.services import ServiceKind
 from cairn.sandbox.contracts import (
     ACTIVE_SANDBOX_STATUSES,
     SandboxArtifact,
@@ -38,6 +39,9 @@ from cairn.server.artifacts.local import LocalArtifactStore
 
 # The fixed path the in-container semantic runner reads its assignment from.
 SEMANTIC_SCOPE_FILENAME = "cairn-semantic-scope.json"
+DYNAMIC_PLAN_FILENAME = "cairn-dynamic-plan.json"
+# Relative to `/work/scratch`, so the runner resolves it without a host path.
+BUILD_OUTPUT_DIRECTORY = "build"
 VERIFY_CANDIDATE_FILENAME = "cairn-verify-candidate.json"
 
 
@@ -123,12 +127,18 @@ class SandboxManager:
                 ),
             )
             self._write_semantic_scope(workspace, request)
+            services = self._prepare_dynamic_environment(
+                sandbox_id,
+                workspace,
+                request,
+            )
             self.backend.create(
                 sandbox_id,
                 template,
                 limits,
                 workspace,
                 self._credentials(request),
+                services,
             )
         except SandboxError:
             self._remove_workspace(workspace.root)
@@ -631,6 +641,75 @@ class SandboxManager:
                 "Sandbox workspace could not be prepared",
                 http_status=503,
             ) from exc
+
+    def _prepare_dynamic_environment(
+        self,
+        sandbox_id: UUID,
+        workspace: SandboxWorkspace,
+        request: SandboxCreateRequest,
+    ) -> tuple[ServiceKind, ...]:
+        """Unpack the runnable artifact and write the probe plan into scratch.
+
+        Returns the dependency service kinds the backend should start. The
+        build output goes to scratch rather than source: it is task-owned
+        writable state, and `/work/source` stays the read-only Snapshot §9.3
+        describes.
+        """
+
+        if request.dynamic is None:
+            return ()
+        spec = request.dynamic
+        try:
+            build_path = self.artifact_store.resolve(
+                spec.build_output.storage_key,
+                expected_sha256=spec.build_output.sha256,
+                expected_size=spec.build_output.size_bytes,
+            )
+        except ArtifactStoreError as exc:
+            raise SandboxError(
+                "SANDBOX_BUILD_OUTPUT_INVALID",
+                "Build output Artifact cannot be verified",
+            ) from exc
+        try:
+            extract_snapshot_archive(
+                build_path,
+                workspace.scratch / BUILD_OUTPUT_DIRECTORY,
+                ArchiveLimits(
+                    max_files=self.settings.max_snapshot_files,
+                    max_total_bytes=self.settings.max_snapshot_bytes,
+                    max_file_bytes=self.settings.max_snapshot_bytes,
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            raise SandboxError(
+                "SANDBOX_BUILD_OUTPUT_INVALID",
+                "Build output Artifact could not be unpacked",
+            ) from exc
+
+        services = tuple(dict.fromkeys(spec.services))
+        plan = {
+            "app_jar": spec.app_jar,
+            "app_port": spec.app_port,
+            "build_directory": BUILD_OUTPUT_DIRECTORY,
+            # Resolved by the backend, because only it knows the container
+            # names; the runner must not have to guess where a service lives.
+            "service_hosts": self.backend.service_hosts(sandbox_id, services),
+            "targets": [target.model_dump(mode="json") for target in spec.targets],
+        }
+        target = workspace.scratch / DYNAMIC_PLAN_FILENAME
+        try:
+            target.write_text(
+                json.dumps(plan, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.chmod(target, 0o444)
+        except OSError as exc:
+            raise SandboxError(
+                "SANDBOX_WORKSPACE_UNAVAILABLE",
+                "Sandbox workspace could not be prepared",
+                http_status=503,
+            ) from exc
+        return services
 
     def _credentials(self, request: SandboxCreateRequest) -> dict[str, str] | None:
         """The grant, handed straight to the backend and kept out of state.

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from cairn.analysis.contracts import AnalysisManifest, AnalysisOperation
 from cairn.sandbox.contracts import SandboxArtifact
 from cairn.semantic.contracts import SemanticReviewResult
+from cairn.dynamic.contracts import DynamicResult
 from cairn.verify.contracts import VerifyResult
 from cairn.server.artifacts import ArtifactStore
 from cairn.server.domain.enums import ArtifactAccessLevel, ArtifactKind
@@ -174,6 +175,28 @@ class SandboxArtifactRegistrar:
                 "Verification result does not match its AuditTask",
             )
         return result
+
+    def load_dynamic_result(self, artifact: Artifact) -> DynamicResult:
+        """Read a `cairn-dynamic-result-v1` out of a collected output TAR.
+
+        Same hardened member walk as the other loaders. This one carries
+        response excerpts from an application built out of repository code, so
+        it is the least trusted output the Orchestrator reads.
+        """
+
+        payload, _seen = self._read_output_member(
+            artifact,
+            "dynamic-result.json",
+            missing_code="DYNAMIC_RESULT_MISSING",
+            invalid_code="DYNAMIC_RESULT_INVALID",
+        )
+        try:
+            return DynamicResult.model_validate_json(payload)
+        except ValidationError as exc:
+            raise OrchestratorError(
+                "DYNAMIC_RESULT_INVALID",
+                "Dynamic verification result failed contract validation",
+            ) from exc
 
     def _read_output_member(
         self,

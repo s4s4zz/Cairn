@@ -308,14 +308,19 @@ def _build_argv(module_root: Path, build_system: str) -> tuple[str, list[str]]:
             ],
         )
     wrapper = module_root / "gradlew"
+    # `assemble` rather than `classes`: dynamic verification needs something it
+    # can run, and `classes` stops at compiled output. `assemble` is the
+    # standard lifecycle task for producing archives and picks up the Spring
+    # Boot plugin's `bootJar` when it is applied, without this having to detect
+    # the plugin.
     if wrapper.is_file() and not wrapper.is_symlink():
         return (
             "gradle-wrapper",
-            ["./gradlew", "--no-daemon", "--console=plain", "classes"],
+            ["./gradlew", "--no-daemon", "--console=plain", "assemble"],
         )
     return (
         "gradle",
-        ["gradle", "--no-daemon", "--console=plain", "classes"],
+        ["gradle", "--no-daemon", "--console=plain", "assemble"],
     )
 
 

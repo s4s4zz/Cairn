@@ -127,6 +127,7 @@ def test_http_client_sends_only_the_closed_create_contract(tmp_path: Path) -> No
         "task_id",
         "limits",
         "semantic",
+        "dynamic",
     }
     # The point of this assertion is what is *absent*: nothing the caller sends
     # can choose an image, a command, an environment mapping, mounts,
@@ -134,6 +135,10 @@ def test_http_client_sends_only_the_closed_create_contract(tmp_path: Path) -> No
     # carrying a grant and a review scope, and it is null for every template
     # but `semantic`.
     assert fake_session.calls[0]["json"]["semantic"] is None
+    # `dynamic` names dependency service *kinds* and an Artifact descriptor,
+    # never an image or a host path, and only the validation template may
+    # carry it.
+    assert fake_session.calls[0]["json"]["dynamic"] is None
     client.close()
     assert fake_session.closed is True
 

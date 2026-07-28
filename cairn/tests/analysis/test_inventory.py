@@ -149,6 +149,6 @@ def test_independent_nested_mixed_builds_each_receive_a_build_step(
             "module_path": "tools/worker",
             "build_system": "gradle",
             "runner": "gradle",
-            "argv": ["gradle", "--no-daemon", "--console=plain", "classes"],
+            "argv": ["gradle", "--no-daemon", "--console=plain", "assemble"],
         },
     ]

@@ -16,6 +16,8 @@ from pydantic import (
 )
 
 
+from cairn.sandbox.services import ServiceKind
+
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 StorageKey = Annotated[
     str,
@@ -261,6 +263,48 @@ class SemanticSandboxSpec(StrictModel):
         return self
 
 
+class DynamicTargetSpec(StrictModel):
+    """One Finding the dynamic verifier should try to exercise.
+
+    Like :class:`VerifyCandidateSpec`, this carries only what the probe needs
+    to construct a request — never the analysis behind the Finding. The probes
+    are platform-authored and category-driven, so no prose is required and none
+    can travel.
+    """
+
+    finding_id: UUID
+    category: str = Field(min_length=1, max_length=255)
+    # Route metadata as the deterministic index recorded it. `route` may be a
+    # method-level suffix, because the index does not resolve class-level
+    # @RequestMapping prefixes; `route_prefixes` carries the candidates the
+    # probe should try in order before giving up as inconclusive.
+    http_method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
+    route: str | None = Field(default=None, max_length=1024)
+    route_prefixes: list[str] = Field(default_factory=list, max_length=8)
+    parameter: str | None = Field(default=None, max_length=255)
+
+
+class DynamicSandboxSpec(StrictModel):
+    """Everything a validation Sandbox needs, as a closed typed block.
+
+    The caller names service *kinds*, never images; the runnable artifact is an
+    Artifact descriptor, never a host path; and the probe plan is a fixed shape.
+    Subproject three's property survives the arrival of dependency containers.
+    """
+
+    build_output: SnapshotArtifact
+    app_jar: RelativePath
+    app_port: int = Field(default=8080, ge=1, le=65535)
+    services: list[ServiceKind] = Field(default_factory=list, max_length=8)
+    targets: list[DynamicTargetSpec] = Field(default_factory=list, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_services(self) -> "DynamicSandboxSpec":
+        if len(set(self.services)) != len(self.services):
+            raise ValueError("dependency services must be unique")
+        return self
+
+
 class SandboxCreateRequest(StrictModel):
     template: SandboxTemplateName
     operation: SandboxOperation = SandboxOperation.DEFAULT
@@ -268,6 +312,18 @@ class SandboxCreateRequest(StrictModel):
     task_id: UUID | None = None
     limits: SandboxLimitsOverride = Field(default_factory=SandboxLimitsOverride)
     semantic: SemanticSandboxSpec | None = None
+    dynamic: DynamicSandboxSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_dynamic_block(self) -> "SandboxCreateRequest":
+        # Required for the validation template and refused for every other one,
+        # so no other template can start dependency containers.
+        wants_dynamic = self.template is SandboxTemplateName.VALIDATION
+        if wants_dynamic and self.dynamic is None:
+            raise ValueError("the validation template requires a dynamic block")
+        if not wants_dynamic and self.dynamic is not None:
+            raise ValueError("only the validation template accepts a dynamic block")
+        return self
 
     @model_validator(mode="after")
     def validate_semantic_block(self) -> "SandboxCreateRequest":

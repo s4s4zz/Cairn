@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Mapping, Protocol
 from uuid import UUID
 
 from cairn.sandbox.contracts import SandboxLimits
+from cairn.sandbox.services import ServiceKind
 from cairn.sandbox.templates import SandboxTemplate
 
 
@@ -46,6 +48,7 @@ class SandboxContainerBackend(Protocol):
         limits: SandboxLimits,
         workspace: SandboxWorkspace,
         credentials: Mapping[str, str] | None = None,
+        services: Sequence[ServiceKind] = (),
     ) -> None: ...
 
     def start(self, sandbox_id: UUID) -> None: ...

@@ -1,0 +1,62 @@
+# The dynamic verification image (design spec §7.7, §9.7).
+#
+# Runs the target application and the platform's deterministic probes inside a
+# one-shot Sandbox on `validation-net-<run-id>`. It also serves as the
+# out-of-band echo target, so SSRF, command-execution and XXE confirmations
+# need no image the platform does not already ship.
+#
+# Deliberately NOT built on the analysis image. §9.7 gives the Dynamic Verifier
+# "the right to start the target program and reach the validation network" —
+# not a build toolchain. A JRE runs a packaged artifact; a JDK, Maven or Gradle
+# would let a compromised probe rebuild the application it is supposed to be
+# testing. curl and wget are absent for the same reason the reviewer image
+# lacks them: the probes make their own bounded requests from Python.
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        openjdk-17-jre-headless \
+        python3-minimal \
+        python3-yaml \
+    && rm -rf /var/lib/apt/lists/* \
+    && java_home="$(dirname "$(dirname "$(readlink -f /usr/bin/java)")")" \
+    && mkdir -p /opt/java \
+    && ln -s "${java_home}" /opt/java/openjdk
+
+RUN groupadd --gid 65532 sandbox \
+    && useradd \
+        --uid 65532 \
+        --gid 65532 \
+        --no-create-home \
+        --home-dir /nonexistent \
+        --shell /usr/sbin/nologin \
+        sandbox \
+    && mkdir -p /opt/cairn/bin /work/source /work/scratch /work/output \
+    && chown -R 65532:65532 /work/scratch /work/output
+
+COPY ./sandbox-images/validation_runner.py /opt/cairn/bin/cairn-validation-runner
+COPY ./sandbox-images/echo_server.py /opt/cairn/bin/cairn-echo-server
+COPY ./cairn/src/cairn/__init__.py /opt/cairn/lib/cairn/__init__.py
+COPY ./cairn/src/cairn/analysis /opt/cairn/lib/cairn/analysis
+COPY ./cairn/src/cairn/dynamic /opt/cairn/lib/cairn/dynamic
+
+RUN chmod 0555 /opt/cairn/bin/cairn-validation-runner /opt/cairn/bin/cairn-echo-server \
+    && ln -s cairn-validation-runner /opt/cairn/bin/run-validation \
+    && ln -s cairn-echo-server /opt/cairn/bin/run-echo \
+    # No package manager and no general network client. A probe that is talked
+    # into "just fetch and run this" has nothing to reach.
+    && rm -f \
+        /usr/bin/wget /usr/bin/curl \
+        /usr/bin/apt /usr/bin/apt-get /usr/bin/dpkg \
+        /usr/local/bin/pip /usr/local/bin/pip3
+
+USER 65532:65532
+WORKDIR /work/source
+
+ENV PYTHONPATH=/opt/cairn/lib \
+    PYTHONDONTWRITEBYTECODE=1 \
+    JAVA_HOME=/opt/java/openjdk
+
+ENTRYPOINT []
+CMD ["/opt/cairn/bin/run-validation"]

@@ -407,12 +407,13 @@ def test_build_failure_continues_source_scans_and_records_coverage(
     # The seventh is the semantic stage: this fixture has real entrypoints,
     # so a review is planned, and with no LLM grant signing key configured
     # it fails closed and is reported as a coverage gap rather than skipped.
-    # The eighth is the dynamic stage reporting, per §7.7, that no runtime
-    # environment existed — an inconclusive verdict, never a rejection.
-    assert result.warning_count == len(coverage.coverage_warnings) == 8
+    # The last two are the dynamic stage reporting, per §7.7, that the build
+    # produced nothing runnable and so no runtime environment existed — an
+    # inconclusive verdict, never a rejection.
+    assert result.warning_count == len(coverage.coverage_warnings) == 9
     assert {
         warning["reason_code"] for warning in coverage.coverage_warnings
-    } >= {"DYNAMIC_ENVIRONMENT_UNAVAILABLE"}
+    } >= {"DYNAMIC_BUILD_ARTIFACT_MISSING", "DYNAMIC_ENVIRONMENT_UNAVAILABLE"}
     assert {
         warning["reason_code"] for warning in coverage.coverage_warnings
     } >= {"SEMANTIC_GRANT_KEY_UNAVAILABLE"}

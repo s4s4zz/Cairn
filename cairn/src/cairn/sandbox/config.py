@@ -34,6 +34,12 @@ class SandboxSettings(BaseSettings):
     validation_image: str = "cairn-sandbox-validation:local"
     helper_image: str = "cairn-sandbox-helper:local"
     semantic_image: str = "cairn-sandbox-semantic:local"
+    # Dependency services a validation Sandbox may start (§7.7). Settings rather
+    # than code constants so an air-gapped deployment can point them at its own
+    # mirror; the *set* of services stays closed either way.
+    postgres_image: str = "postgres:16-alpine"
+    mysql_image: str = "mysql:8"
+    redis_image: str = "redis:7-alpine"
     build_network: str | None = None
     # The network on the sandbox daemon that routes to the LLM Gateway. The
     # Manager drives its own rootless daemon, so the Compose network
@@ -59,6 +65,9 @@ class SandboxSettings(BaseSettings):
         "validation_image",
         "helper_image",
         "semantic_image",
+        "postgres_image",
+        "mysql_image",
+        "redis_image",
     )
     @classmethod
     def validate_image(cls, value: str) -> str:

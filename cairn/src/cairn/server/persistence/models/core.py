@@ -188,6 +188,16 @@ class AuditPolicy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         default=dict,
     )
+    # Per-run ceilings for dynamic verification: max_findings,
+    # environment_timeout_seconds and per_probe_timeout_seconds. One Sandbox
+    # serves a whole run, so this bounds how many findings are probed inside it
+    # rather than how many environments are built. See
+    # cairn.orchestrator.dynamic_tasks.DynamicBudget.
+    dynamic_budget: Mapped[dict[str, object]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     audit_runs: Mapped[list[AuditRun]] = relationship(back_populates="policy")

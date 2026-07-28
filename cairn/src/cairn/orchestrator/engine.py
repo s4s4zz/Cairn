@@ -31,6 +31,13 @@ from cairn.orchestrator.tasks import (
     get_or_create_semantic_task,
     get_or_create_task,
 )
+from cairn.orchestrator.dynamic_tasks import (
+    TRUNCATION_REASON as DYNAMIC_TRUNCATION_REASON,
+    DynamicBudget,
+    get_or_create_dynamic_task,
+    plan_probe_targets,
+)
+from cairn.dynamic.contracts import DynamicResult, ProbeOutcome
 from cairn.orchestrator.verification import (
     TRUNCATION_REASON as VERIFY_TRUNCATION_REASON,
     VerificationBudget,
@@ -40,6 +47,7 @@ from cairn.pipeline.decide import REVIEW_REQUIRED_SEVERITIES, decide
 from cairn.pipeline.promote import promote_candidates
 from cairn.sandbox.contracts import (
     ACTIVE_SANDBOX_STATUSES,
+    DynamicSandboxSpec,
     SandboxCreateRequest,
     SandboxLimitsOverride,
     SandboxOperation,
@@ -52,6 +60,7 @@ from cairn.sandbox.contracts import (
     VerifyCandidateSpec,
     VerifyLocationSpec,
 )
+from cairn.sandbox.services import ServiceKind
 from cairn.semantic.client import DEFAULT_MODEL as SEMANTIC_MODEL
 from cairn.semantic.contracts import SEMANTIC_TOOL_NAME, SemanticReviewResult
 from cairn.semantic.findings import ReviewScope
@@ -158,6 +167,9 @@ class DeterministicOrchestrator:
         self.settings = settings
         self.artifact_store = artifact_store
         self.sandbox = sandbox
+        # Set while the dynamic stage runs, so probe evidence can name the
+        # task that produced it.
+        self._dynamic_task_id: UUID | None = None
 
     def process_next(self) -> UUID | None:
         audit_run = self.session.scalar(
@@ -514,32 +526,49 @@ class DeterministicOrchestrator:
         )
 
     def _dynamic_verify(self, audit_run: AuditRun) -> None:
-        """Promote candidates to Findings, then attempt runtime verification (§7.7).
+        """Promote candidates to Findings, then verify them at runtime (§7.7).
 
         The promotion happens here rather than at the end of the semantic stage
         because a ``Verification`` and an ``Evidence`` row both hang off a
         ``finding_id``: nothing can be verified until the Findings exist.
 
-        The runtime leg is not built yet (subproject 6b), so every Finding gets
-        an ``inconclusive`` dynamic verification naming why. That is not a
-        placeholder — §7.7 states that a missing environment, a failed build and
-        a timeout all produce ``inconclusive`` and never ``rejected``, so
-        recording the absence honestly *is* the specified behaviour. What 6b
-        changes is that some of these verdicts become real.
+        One validation Sandbox serves the whole run. Standing the application
+        and its dependencies up is the expensive part; probing one more finding
+        against an environment that is already running is not, so a sandbox per
+        finding would multiply the cost of the environment by the number of
+        findings for no gain.
+
+        When the environment cannot be built — the policy disables it, the
+        build produced nothing runnable, the Sandbox failed — every Finding
+        still receives an ``inconclusive`` dynamic verification naming why.
+        §7.7 permits no other answer, and recording the absence is what keeps
+        the §7.10 completion gate honest.
         """
 
         coverage = self._coverage(audit_run)
         service = FindingService(self.session)
         findings = self._promote_findings(audit_run, coverage, service)
-
-        reason_code, detail = self._dynamic_unavailable_reason(audit_run)
         for finding in findings:
             if FindingStatus(finding.status) is FindingStatus.CANDIDATE:
                 service.transition(finding, FindingStatus.VALIDATING)
-            if not any(
+
+        outcomes: dict[str, ProbeOutcome] = {}
+        if findings:
+            outcomes = self._run_dynamic_environment(
+                audit_run,
+                findings,
+                coverage,
+            )
+
+        reason_code, detail = self._dynamic_unavailable_reason(audit_run)
+        for finding in findings:
+            if any(
                 verification.method == VerificationMethod.DYNAMIC_POC.value
                 for verification in finding.verifications
             ):
+                continue
+            outcome = outcomes.get(str(finding.id))
+            if outcome is None:
                 service.record_verification(
                     finding,
                     method=VerificationMethod.DYNAMIC_POC,
@@ -547,7 +576,16 @@ class DeterministicOrchestrator:
                     verifier=DYNAMIC_VERIFIER_NAME,
                     reasoning=detail,
                 )
-        if findings:
+                continue
+            service.record_verification(
+                finding,
+                method=VerificationMethod.DYNAMIC_POC,
+                verdict=VerificationVerdict(outcome.verdict),
+                verifier=DYNAMIC_VERIFIER_NAME,
+                reasoning=outcome.detail,
+            )
+            self._record_probe_evidence(finding, outcome, service)
+        if findings and not outcomes:
             self._add_warning(
                 coverage,
                 reason_code,
@@ -561,6 +599,296 @@ class DeterministicOrchestrator:
             audit_run.id,
             AuditRunStatus.MACHINE_REVIEW,
         )
+
+    def _run_dynamic_environment(
+        self,
+        audit_run: AuditRun,
+        findings: list[Finding],
+        coverage: AuditCoverage,
+    ) -> dict[str, ProbeOutcome]:
+        """Stand the application up once and probe every probeable Finding.
+
+        Returns the outcomes keyed by Finding id, empty when the environment
+        could not be built. An empty result is not a failure: the caller records
+        the §7.7 inconclusive verdict and the run continues.
+        """
+
+        self._dynamic_task_id = None
+        policy = getattr(audit_run, "policy", None)
+        if getattr(policy, "dynamic_verification", None) == (
+            DynamicVerificationMode.DISABLED.value
+        ):
+            return {}
+
+        runtime_plan = self._runtime_plan(audit_run)
+        runnable = self._runnable_artifact(audit_run)
+        if runnable is None:
+            # §7.3: a build that produced nothing runnable marks dynamic
+            # verification unavailable rather than failing the run.
+            self._add_warning(
+                coverage,
+                "DYNAMIC_BUILD_ARTIFACT_MISSING",
+                tool=DYNAMIC_VERIFIER_NAME,
+                task_id=audit_run.id,
+            )
+            return {}
+        build_artifact, app_jar = runnable
+
+        budget = DynamicBudget.from_policy(
+            getattr(policy, "dynamic_budget", None)
+        )
+        plan = plan_probe_targets(
+            findings,
+            self._inventory_payload(audit_run)["entrypoints"],
+            budget=budget,
+        )
+        if plan.truncated:
+            self._add_warning(
+                coverage,
+                DYNAMIC_TRUNCATION_REASON,
+                tool=DYNAMIC_VERIFIER_NAME,
+                task_id=audit_run.id,
+            )
+        if not plan.targets:
+            return {}
+
+        task = get_or_create_dynamic_task(self.session, audit_run)
+        self.session.commit()
+        task = self.session.get(AuditTask, task.id)
+        assert task is not None
+        self._dynamic_task_id = task.id
+        if task.status in {
+            AuditTaskStatus.SUCCEEDED.value,
+            AuditTaskStatus.FAILED.value,
+            AuditTaskStatus.SKIPPED.value,
+        }:
+            artifacts = self._task_artifacts(task)
+            if not artifacts:
+                return {}
+            try:
+                result = SandboxArtifactRegistrar(
+                    self.session,
+                    self.artifact_store,
+                ).load_dynamic_result(artifacts[-1])
+            except OrchestratorError:
+                return {}
+            return self._outcomes_by_finding(result, coverage, task)
+
+        task.status = AuditTaskStatus.RUNNING.value
+        task.worker_name = f"{self.settings.orchestrator_worker_name}:dynamic-verifier"
+        task.attempt += 1
+        task.started_at = task.started_at or datetime.now(UTC)
+        task.finished_at = None
+        task.error_code = None
+        self.session.commit()
+
+        snapshot = self.session.get(SourceSnapshot, audit_run.snapshot_id)
+        if snapshot is None:
+            raise OrchestratorError(
+                "ORCHESTRATOR_SNAPSHOT_REQUIRED",
+                "AuditTask Snapshot is unavailable",
+            )
+        services = [
+            ServiceKind(name)
+            for name in runtime_plan.get("services", [])
+            if name in {kind.value for kind in ServiceKind}
+        ]
+        # The echo service is the platform's own out-of-band target, not
+        # something the application asked for, so it is always present.
+        if ServiceKind.ECHO not in services:
+            services.append(ServiceKind.ECHO)
+        try:
+            request = SandboxCreateRequest(
+                template=SandboxTemplateName.VALIDATION,
+                operation=SandboxOperation.DEFAULT,
+                snapshot=SnapshotArtifact(
+                    storage_key=snapshot.artifact.storage_key,
+                    sha256=snapshot.artifact.sha256,
+                    size_bytes=snapshot.artifact.size_bytes,
+                ),
+                task_id=task.id,
+                limits=SandboxLimitsOverride(
+                    timeout_seconds=budget.environment_timeout_seconds,
+                ),
+                dynamic=DynamicSandboxSpec(
+                    build_output=SnapshotArtifact(
+                        storage_key=build_artifact.storage_key,
+                        sha256=build_artifact.sha256,
+                        size_bytes=build_artifact.size_bytes,
+                    ),
+                    app_jar=app_jar,
+                    app_port=int(runtime_plan.get("app_port") or 8080),
+                    services=services,
+                    targets=list(plan.targets),
+                ),
+            )
+        except (OrchestratorError, ValueError) as exc:
+            self._queue_or_fail_task(task, "DYNAMIC_PLAN_INVALID", False)
+            LOG.warning("dynamic verification plan rejected: %s", exc)
+            return {}
+
+        sandbox_record = self._drive_model_sandbox(
+            audit_run,
+            task,
+            request,
+            missing_result_code="DYNAMIC_RESULT_MISSING",
+        )
+        if sandbox_record is None:
+            return {}
+
+        registrar = SandboxArtifactRegistrar(self.session, self.artifact_store)
+        try:
+            artifact = registrar.register(
+                task,
+                sandbox_record.artifacts[0],
+                kind=ArtifactKind.RUNTIME_LOG,
+            )
+            result = registrar.load_dynamic_result(artifact)
+        except OrchestratorError as exc:
+            self._queue_or_fail_task(task, exc.error_code, False)
+            return {}
+
+        task.finished_at = datetime.now(UTC)
+        task.sandbox_id = sandbox_record.id
+        if result.status is ToolStatus.COMPLETED:
+            task.status = AuditTaskStatus.SUCCEEDED.value
+            task.error_code = None
+        else:
+            task.status = AuditTaskStatus.FAILED.value
+            task.error_code = result.reason_code
+        self.session.commit()
+
+        self._assert_environment_destroyed(sandbox_record.id, coverage, task)
+        return self._outcomes_by_finding(result, coverage, task)
+
+    def _outcomes_by_finding(
+        self,
+        result: DynamicResult,
+        coverage: AuditCoverage,
+        task: AuditTask,
+    ) -> dict[str, ProbeOutcome]:
+        if result.status is not ToolStatus.COMPLETED and result.reason_code:
+            self._add_warning(
+                coverage,
+                result.reason_code,
+                tool=DYNAMIC_VERIFIER_NAME,
+                task_id=task.id,
+            )
+        for outcome in result.outcomes:
+            if outcome.verdict == "inconclusive" and outcome.reason_code:
+                self._add_warning(
+                    coverage,
+                    outcome.reason_code,
+                    tool=f"{DYNAMIC_VERIFIER_NAME}:{outcome.category}",
+                    task_id=task.id,
+                )
+        return {outcome.finding_id: outcome for outcome in result.outcomes}
+
+    def _assert_environment_destroyed(
+        self,
+        sandbox_id: UUID,
+        coverage: AuditCoverage,
+        task: AuditTask,
+    ) -> None:
+        """§13.6: after destruction the target service must be unreachable.
+
+        Asked of the Sandbox API rather than assumed, because "we called
+        destroy" and "nothing is left running" are different claims and only the
+        second is the acceptance criterion.
+        """
+
+        try:
+            record = self.sandbox.get(sandbox_id)
+        except OrchestratorError:
+            # The sandbox is gone entirely, which is the strongest form of the
+            # property holding.
+            return
+        if not record.resources_destroyed:
+            self._add_warning(
+                coverage,
+                "DYNAMIC_ENVIRONMENT_NOT_DESTROYED",
+                tool=DYNAMIC_VERIFIER_NAME,
+                task_id=task.id,
+            )
+
+    def _runtime_plan(self, audit_run: AuditRun) -> dict[str, object]:
+        for fact in self.session.scalars(
+            select(AuditFact).where(
+                AuditFact.audit_run_id == audit_run.id,
+                AuditFact.kind == AuditFactKind.ARCHITECTURE.value,
+            )
+        ):
+            plan = fact.structured_payload.get("runtime_plan")
+            if isinstance(plan, dict):
+                return plan
+        return {}
+
+    def _runnable_artifact(
+        self,
+        audit_run: AuditRun,
+    ) -> tuple[Artifact, str] | None:
+        """The build Artifact and the archive path inside it, if there is one."""
+
+        task = self.session.scalar(
+            select(AuditTask).where(
+                AuditTask.audit_run_id == audit_run.id,
+                AuditTask.scope_key == TASK_SPECS[AnalysisOperation.BUILD].scope_key,
+            )
+        )
+        if task is None:
+            return None
+        artifacts = self._task_artifacts(task)
+        if not artifacts:
+            return None
+        registrar = SandboxArtifactRegistrar(self.session, self.artifact_store)
+        for artifact in reversed(artifacts):
+            try:
+                manifest = registrar.load_manifest(
+                    artifact,
+                    expected_operation=AnalysisOperation.BUILD,
+                )
+            except OrchestratorError:
+                continue
+            if manifest.build is None or not manifest.build.runnable_artifacts:
+                continue
+            # The first archive in module order; a multi-module repository that
+            # packages several is verified through its first, and the rest are
+            # reported as unprobed rather than silently ignored.
+            return artifact, manifest.build.runnable_artifacts[0].path
+        return None
+
+    def _record_probe_evidence(
+        self,
+        finding: Finding,
+        outcome: ProbeOutcome,
+        service: FindingService,
+    ) -> None:
+        """Save the request, response and timing §7.7 requires.
+
+        Stored as evidence text rather than only as a verdict, because "the
+        payload took 5.2 s longer than the baseline" is the part a reviewer has
+        to be able to check.
+        """
+
+        task_id = self._dynamic_task_id
+        if task_id is None:
+            return
+        for label, exchange in (
+            ("baseline", outcome.baseline),
+            ("payload", outcome.payload),
+        ):
+            if exchange is None:
+                continue
+            service.record_evidence(
+                finding,
+                evidence_type=EvidenceType.HTTP_EXCHANGE,
+                summary=(
+                    f"{label}: {exchange.method} {exchange.url} -> "
+                    f"{exchange.status_code} in {exchange.elapsed_ms} ms"
+                    f"{' (echo hit)' if label == 'payload' and outcome.echo_observed else ''}"
+                )[:2048],
+                produced_by_task_id=task_id,
+            )
 
     def _dynamic_unavailable_reason(self, audit_run: AuditRun) -> tuple[str, str]:
         policy = getattr(audit_run, "policy", None)
@@ -1582,6 +1910,9 @@ class DeterministicOrchestrator:
                 "modules": inventory["modules"],
                 "module_dependencies": inventory["module_dependencies"],
                 "build_plan": inventory["build_plan"],
+                # The runtime environment §7.7 needs, distinct from the build
+                # command sequence above.
+                "runtime_plan": inventory.get("runtime_plan", {}),
                 "symbols": inventory["symbols"],
                 "permissions": inventory["permissions"],
                 "classified_paths": inventory["classified_paths"],
