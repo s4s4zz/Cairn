@@ -64,6 +64,7 @@ class SandboxOperation(StrEnum):
     CONFIG_RULES = "config-rules"
     SEMANTIC = "semantic"
     INDEPENDENT_VERIFY = "independent-verify"
+    AUTHOR_POC = "author-poc"
 
 
 class SandboxStatus(StrEnum):
@@ -225,6 +226,27 @@ class VerifyCandidateSpec(StrictModel):
     locations: list[VerifyLocationSpec] = Field(min_length=1, max_length=64)
 
 
+class PocAssignmentSpec(StrictModel):
+    """The Finding a PoC Author is asked to demonstrate (§7.7).
+
+    Unlike :class:`VerifyCandidateSpec`, this is not blind: the author reads the
+    source and writes a request, so it carries the entrypoint route the request
+    must address. It still carries no free-form analysis — the author derives
+    its own from the code — and its shape is fixed here rather than left to the
+    caller.
+    """
+
+    finding_id: str = Field(min_length=1, max_length=64)
+    module: str = Field(min_length=1, max_length=1024)
+    category: str = Field(min_length=1, max_length=255)
+    cwe_ids: list[CweId] = Field(default_factory=list, max_length=16)
+    sink: str | None = Field(default=None, max_length=1024)
+    http_method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "GET"
+    route: str | None = Field(default=None, max_length=1024)
+    route_prefixes: list[str] = Field(default_factory=list, max_length=8)
+    locations: list[VerifyLocationSpec] = Field(default_factory=list, max_length=64)
+
+
 class SemanticSandboxSpec(StrictModel):
     """The credential and assignment a model-backed review needs to run.
 
@@ -233,21 +255,27 @@ class SemanticSandboxSpec(StrictModel):
     environment mapping, so the request schema keeps refusing caller-chosen
     variables (design spec §9.7).
 
-    Exactly one assignment is carried: a ``scope`` for the Semantic Reviewer or
-    a ``candidate`` for the Independent Reviewer. Which one is required is
-    decided by :class:`SandboxCreateRequest`, which knows the operation.
+    Exactly one assignment is carried: a ``scope`` for the Semantic Reviewer, a
+    ``candidate`` for the Independent Reviewer, or a ``poc`` for the PoC Author.
+    Which one is required is decided by :class:`SandboxCreateRequest`, which
+    knows the operation.
     """
 
     grant_token: GrantToken
     gateway_url: str = Field(min_length=1, max_length=2048)
     scope: SemanticScopeSpec | None = None
     candidate: VerifyCandidateSpec | None = None
+    poc: PocAssignmentSpec | None = None
 
     @model_validator(mode="after")
     def validate_spec(self) -> "SemanticSandboxSpec":
-        if (self.scope is None) == (self.candidate is None):
+        present = sum(
+            assignment is not None
+            for assignment in (self.scope, self.candidate, self.poc)
+        )
+        if present != 1:
             raise ValueError(
-                "a semantic block carries exactly one of scope or candidate"
+                "a semantic block carries exactly one of scope, candidate or poc"
             )
         parsed = urlsplit(self.gateway_url)
         if (
@@ -284,12 +312,60 @@ class DynamicTargetSpec(StrictModel):
     parameter: str | None = Field(default=None, max_length=255)
 
 
+class PocRequestSpec(StrictModel):
+    """A model-authored request template, as it crosses the Sandbox API.
+
+    Re-declared locally rather than imported from ``cairn.poc.contracts`` for
+    the same reason as every other wire type here: the Sandbox Manager depends
+    on no analysis, semantic or poc module. The in-container executor parses it
+    back into a real ``PocPlan`` and re-validates it, so the platform-side gate
+    runs on both sides of the boundary.
+    """
+
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+    path: str = Field(min_length=1, max_length=2048)
+    headers: dict[str, str] = Field(default_factory=dict)
+    body: str | None = Field(default=None, max_length=8192)
+
+
+class PocInjectionSpec(StrictModel):
+    location: Literal["query", "path", "header", "body_field"]
+    name: str = Field(min_length=1, max_length=255)
+    benign: str = Field(max_length=2048)
+    payload: str = Field(max_length=2048)
+
+
+class PocCriterionSpec(StrictModel):
+    kind: Literal[
+        "contains_text",
+        "status_code_is",
+        "status_code_differs",
+        "elapsed_exceeds_ms",
+        "echo_nonce_observed",
+    ]
+    match_text: str | None = Field(default=None, max_length=256)
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    elapsed_ms: int | None = Field(default=None, ge=250, le=60_000)
+
+
+class PocPlanSpec(StrictModel):
+    """A validated PoC the executor should run. Shape mirrors ``PocPlan``."""
+
+    finding_id: str = Field(min_length=1, max_length=64)
+    category: str = Field(min_length=1, max_length=255)
+    request: PocRequestSpec
+    injection: PocInjectionSpec
+    criterion: PocCriterionSpec
+    rationale: str = Field(min_length=1, max_length=4096)
+
+
 class DynamicSandboxSpec(StrictModel):
     """Everything a validation Sandbox needs, as a closed typed block.
 
     The caller names service *kinds*, never images; the runnable artifact is an
-    Artifact descriptor, never a host path; and the probe plan is a fixed shape.
-    Subproject three's property survives the arrival of dependency containers.
+    Artifact descriptor, never a host path; and both the probe plan and the
+    authored PoCs are fixed shapes. Subproject three's property survives the
+    arrival of dependency containers.
     """
 
     build_output: SnapshotArtifact
@@ -297,6 +373,7 @@ class DynamicSandboxSpec(StrictModel):
     app_port: int = Field(default=8080, ge=1, le=65535)
     services: list[ServiceKind] = Field(default_factory=list, max_length=8)
     targets: list[DynamicTargetSpec] = Field(default_factory=list, max_length=256)
+    poc_plans: list[PocPlanSpec] = Field(default_factory=list, max_length=256)
 
     @model_validator(mode="after")
     def validate_services(self) -> "DynamicSandboxSpec":
@@ -336,13 +413,17 @@ class SandboxCreateRequest(StrictModel):
             raise ValueError("only the semantic template accepts a semantic block")
         if self.semantic is None:
             return self
-        # The assignment has to match the operation. A verify candidate handed
-        # to a semantic review would be audited as a scope; a review scope
-        # handed to a blind reviewer would leave it with nothing to verify.
-        verifying = self.operation is SandboxOperation.INDEPENDENT_VERIFY
-        if verifying and self.semantic.candidate is None:
-            raise ValueError("independent-verify requires a candidate assignment")
-        if not verifying and self.semantic.scope is None:
+        # The assignment has to match the operation, so no worker is handed the
+        # wrong kind of task: a verify candidate audited as a scope, a scope
+        # given to a reviewer with nothing to verify, or a PoC author with no
+        # finding to demonstrate.
+        if self.operation is SandboxOperation.INDEPENDENT_VERIFY:
+            if self.semantic.candidate is None:
+                raise ValueError("independent-verify requires a candidate assignment")
+        elif self.operation is SandboxOperation.AUTHOR_POC:
+            if self.semantic.poc is None:
+                raise ValueError("author-poc requires a poc assignment")
+        elif self.semantic.scope is None:
             raise ValueError("a semantic review requires a scope assignment")
         return self
 

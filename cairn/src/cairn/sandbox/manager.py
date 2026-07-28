@@ -43,6 +43,7 @@ DYNAMIC_PLAN_FILENAME = "cairn-dynamic-plan.json"
 # Relative to `/work/scratch`, so the runner resolves it without a host path.
 BUILD_OUTPUT_DIRECTORY = "build"
 VERIFY_CANDIDATE_FILENAME = "cairn-verify-candidate.json"
+POC_ASSIGNMENT_FILENAME = "cairn-poc-assignment.json"
 
 
 LOG = logging.getLogger(__name__)
@@ -622,6 +623,9 @@ class SandboxManager:
         if request.semantic.candidate is not None:
             assignment = request.semantic.candidate
             filename = VERIFY_CANDIDATE_FILENAME
+        elif request.semantic.poc is not None:
+            assignment = request.semantic.poc
+            filename = POC_ASSIGNMENT_FILENAME
         else:
             assert request.semantic.scope is not None
             assignment = request.semantic.scope

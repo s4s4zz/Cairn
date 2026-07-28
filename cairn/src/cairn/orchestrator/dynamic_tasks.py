@@ -25,6 +25,7 @@ from cairn.orchestrator.errors import OrchestratorError
 DEFAULT_MAX_FINDINGS = 32
 DEFAULT_ENVIRONMENT_TIMEOUT = 900
 DEFAULT_PROBE_TIMEOUT = 30
+DEFAULT_MAX_AUTHORED_POCS = 12
 
 DYNAMIC_TIMEOUT_SECONDS = 1_800
 DYNAMIC_MAX_ATTEMPTS = 2
@@ -49,6 +50,7 @@ class DynamicBudget:
     max_findings: int = DEFAULT_MAX_FINDINGS
     environment_timeout_seconds: int = DEFAULT_ENVIRONMENT_TIMEOUT
     per_probe_timeout_seconds: int = DEFAULT_PROBE_TIMEOUT
+    max_authored_pocs: int = DEFAULT_MAX_AUTHORED_POCS
 
     @classmethod
     def from_policy(cls, payload: object) -> "DynamicBudget":
@@ -64,6 +66,9 @@ class DynamicBudget:
             ),
             per_probe_timeout_seconds=_positive(
                 payload.get("per_probe_timeout_seconds"), DEFAULT_PROBE_TIMEOUT
+            ),
+            max_authored_pocs=_positive(
+                payload.get("max_authored_pocs"), DEFAULT_MAX_AUTHORED_POCS
             ),
         )
 

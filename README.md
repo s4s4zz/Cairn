@@ -2,7 +2,7 @@
 
 **面向 Java 源码的单租户代码审计平台。**
 
-> 当前分支已经完成“审计领域基础”“源码与 Artifact 管理”“Sandbox Manager”“Java 确定性分析”“AI 语义审计”五个阶段，以及“动态验证与机器复核”的 6a、6b 两个增量：Finding Pipeline、独立 Agent 盲审、多容器动态验证环境与确定性探针。Audit Orchestrator 可以把一次运行从源码解析、构建打包、扫描、语义审计推进到正式 Finding、真实运行时验证与独立机器复核，并停在 `human_review`。模型生成的 PoC（6c）、认证、Web 工作台和报告仍未实现，因此尚不能完成端到端审计交付。模型调用的最后一跳需要运维方自备密钥，本仓库未验证。
+> 当前分支已经完成“审计领域基础”“源码与 Artifact 管理”“Sandbox Manager”“Java 确定性分析”“AI 语义审计”五个阶段，以及“动态验证与机器复核”的 6a、6b、6c 三个增量：Finding Pipeline、独立 Agent 盲审、多容器动态验证环境、确定性探针与模型编写的 PoC。Audit Orchestrator 可以把一次运行从源码解析、构建打包、扫描、语义审计推进到正式 Finding、真实运行时验证与独立机器复核，并停在 `human_review`。模型生成的 PoC（6c）、认证、Web 工作台和报告仍未实现，因此尚不能完成端到端审计交付。模型调用的最后一跳需要运维方自备密钥，本仓库未验证。
 
 ## 产品边界
 
@@ -63,6 +63,7 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 - 确定性差分探针：SQL 注入与路径穿越看响应差异，SSRF 与 XXE 靠带 nonce 的带外命中（发请求的是应用本身，无需解读响应），命令注入用时延盲测——注入的命令跑在刻意不含 HTTP 客户端的验证容器里，回连不出去；**只有真正跑过且没发现差异的探针才会 `rejected`**，路由未知、类别不支持、应用未就绪、传输失败一律 `inconclusive`（§7.7）；
 - 构建计划探测只读应用自身的 Spring 配置决定启动哪些依赖，**不解析仓库内的 docker-compose**——那等于让仓库决定平台跑什么容器；也只在 Spring 自己查找的位置读取，测试夹具里的 `application.yml` 不算；
 - 运行时证据：请求、响应、耗时、应用日志与退出状态按 §7.7 保存为 `Evidence` 与 `RUNTIME_LOG` / `POC` Artifact；
+- 模型编写的 PoC（增量 6c）：对没有确定性探针的严重/高危 Finding，模型只写「一个请求模板 + 一个注入点」，平台用良性值与攻击值各代入一次、两次请求可证只差那一个值；成功判据取自闭集（`contains_text` / `status_code_is` / `status_code_differs` / `elapsed_exceeds_ms` / `echo_nonce_observed`），且**必须命中攻击而不命中基准**才算证据——命中基准也命中攻击的判据被判为无区分度而非确认；带外回连的 nonce 由平台生成并在 echo 侧校验，模型看不到也无字段声称命中；PoC 作者跑在无目标网络的 semantic 沙箱、执行跑在无 Gateway 的 validation 沙箱，单一容器无法既写 PoC 又裁决其成败；反序列化、模板注入、表达式注入、未认证访问可覆盖，属主越权（IDOR）因平台无目标应用凭据仍为 `inconclusive` 并写明原因；
 - §7.8 确认规则：一次盲审确认加一个独立确定性工具的佐证即可确认（`runtime_verification=unverified`）；盲审驳回但有工具佐证、或运行时与静态结论相左，一律升给人工裁决而非自行了断；严重与高危 Finding 未经机器复核不得进入人工队列（§13.6），该闸门以 `independent_agent` Verification 行的存在为准；原发现 Worker 不能复核自己的 Finding，该检查落在服务层；
 - 包含 API、PostgreSQL、Orchestrator、Sandbox Manager、LLM Gateway 与持久化状态/Artifact 卷的 Docker Compose 运行环境；
 - `cairn serve`、`cairn sandbox-serve`、`cairn gateway-serve` 和 `cairn orchestrate` 四个服务入口，外加 `cairn semantic-smoke` 供运维方用自备密钥验证到真实模型端点的最后一跳。
@@ -75,8 +76,7 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 
 以下能力属于后续独立实施阶段，不应从当前版本中推断为可用：
 
-1. 模型生成的 PoC（增量 6c）：6b 的探针由平台按类别固定编写，覆盖 SQL 注入、路径穿越、SSRF、XXE 与命令注入；authorization、反序列化、模板注入、表达式注入等类别目前一律 `inconclusive` 并写明原因，不伪装成已验证；
-2. 执行期密钥代理；
+1. 执行期密钥代理；
 3. 本地认证、Vue 审计工作台、人工复核和报告导出；
 4. 内核级目录配额、Nexus 出口策略、seccomp/AppArmor、备份恢复、MinIO/S3、OIDC 和 Kubernetes 执行后端等生产加固。
 
@@ -91,7 +91,9 @@ Cairn 只服务于 Java 代码审计，固定围绕以下领域对象工作：
 - [语义审计执行实施记录](docs/superpowers/plans/2026-07-27-java-audit-semantic-execution.md)
 - [Finding Pipeline 与独立机器复核实施记录](docs/superpowers/plans/2026-07-27-java-audit-finding-pipeline.md)
 - [动态验证与确定性探针实施记录](docs/superpowers/plans/2026-07-28-java-audit-dynamic-verification.md)
+- [模型编写的 PoC 实施记录](docs/superpowers/plans/2026-07-28-java-audit-authored-poc.md)
 - [语义审计执行实施记录](docs/superpowers/plans/2026-07-27-java-audit-semantic-execution.md)
+- [闭源企业平台审计能力增强计划](docs/superpowers/plans/2026-07-28-java-audit-closed-platform-capability.md)
 
 ## 运行要求
 
@@ -145,10 +147,14 @@ export DOCKER_HOST="unix://${CAIRN_ROOTLESS_DOCKER_SOCKET}"
 docker build -f sandbox-images/Dockerfile \
   -t cairn-sandbox-analysis:local .
 docker tag cairn-sandbox-analysis:local cairn-sandbox-build:local
-docker tag cairn-sandbox-analysis:local cairn-sandbox-validation:local
 docker tag cairn-sandbox-analysis:local cairn-sandbox-helper:local
+# semantic 模板承载 AI 语义审计、独立盲审与 PoC 作者，包含 cairn.poc 与 anthropic SDK。
 docker build -f sandbox-images/Dockerfile.semantic \
   -t cairn-sandbox-semantic:local .
+# validation 模板承载动态验证与 PoC 执行，是独立镜像（JRE 而非 JDK，含 Pydantic，
+# 不含 Maven/Gradle/pip/curl），不能从 analysis 镜像 tag 而来。
+docker build -f sandbox-images/Dockerfile.validation \
+  -t cairn-sandbox-validation:local .
 unset DOCKER_HOST
 ```
 

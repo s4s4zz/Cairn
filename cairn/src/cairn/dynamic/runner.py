@@ -33,7 +33,10 @@ from cairn.dynamic.contracts import (
     DynamicResult,
     ProbeOutcome,
 )
+from cairn.dynamic.poc import PocExecutor, REASON_PLAN_INVALID as POC_PLAN_INVALID
 from cairn.dynamic.probes import ProbeRunner, ProbeTarget
+from cairn.poc.contracts import PocPlan
+from pydantic import ValidationError
 
 PLAN_FILENAME = "cairn-dynamic-plan.json"
 RESULT_FILENAME = "dynamic-result.json"
@@ -51,30 +54,46 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     temporary.replace(path)
 
 
-def _failed(reason_code: str, targets: list[ProbeTarget], detail: str) -> DynamicResult:
-    """A terminal result whose every probe is inconclusive.
+def _failed(
+    reason_code: str,
+    targets: list[ProbeTarget],
+    poc_plans: list["PocPlan"],
+    detail: str,
+) -> DynamicResult:
+    """A terminal result whose every probe and PoC is inconclusive.
 
-    The targets still appear, each with the reason the environment could not
-    settle it: the Orchestrator records one verification per Finding either
-    way, so "the environment never came up" is visible per finding rather than
-    only as a run-level note.
+    Both the probe targets and the authored PoCs appear, each with the reason
+    the environment could not settle it: the Orchestrator records one
+    verification per Finding either way, so "the environment never came up" is
+    visible per finding rather than only as a run-level note.
     """
 
+    outcomes = [
+        ProbeOutcome(
+            finding_id=target.finding_id,
+            category=target.category,
+            verdict="inconclusive",
+            reason_code=reason_code,
+            detail=detail,
+        )
+        for target in targets
+    ]
+    outcomes.extend(
+        ProbeOutcome(
+            finding_id=plan.finding_id,
+            category=plan.category,
+            verdict="inconclusive",
+            reason_code=reason_code,
+            detail=detail,
+        )
+        for plan in poc_plans
+    )
     return DynamicResult(
         contract=DYNAMIC_CONTRACT,
         status=ToolStatus.FAILED,
         tool_name=DYNAMIC_TOOL_NAME,
         reason_code=reason_code,
-        outcomes=[
-            ProbeOutcome(
-                finding_id=target.finding_id,
-                category=target.category,
-                verdict="inconclusive",
-                reason_code=reason_code,
-                detail=detail,
-            )
-            for target in targets
-        ],
+        outcomes=outcomes,
     )
 
 
@@ -127,13 +146,36 @@ def parse_targets(payload: dict[str, object]) -> list[ProbeTarget]:
     return targets
 
 
+def parse_poc_plans(payload: dict[str, object]) -> list[PocPlan]:
+    """Parse the authored PoCs, dropping any that no longer validate.
+
+    Each already passed the contract when it was authored and again at the wire
+    boundary; this is a third gate, in the container that will run it, so a
+    plan the executor could misread never reaches the application.
+    """
+
+    plans: list[PocPlan] = []
+    raw = payload.get("poc_plans")
+    if not isinstance(raw, list):
+        return plans
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            plans.append(PocPlan.model_validate(entry))
+        except ValidationError:
+            continue
+    return plans
+
+
 def run(source: Path, scratch: Path, output: Path) -> DynamicResult:
     del source
     try:
         plan = load_plan(scratch)
     except (ValueError, OSError) as exc:
-        return _failed(REASON_PLAN_INVALID, [], str(exc)[:512])
+        return _failed(REASON_PLAN_INVALID, [], [], str(exc)[:512])
     targets = parse_targets(plan)
+    poc_plans = parse_poc_plans(plan)
 
     service_hosts = plan.get("service_hosts")
     service_hosts = service_hosts if isinstance(service_hosts, dict) else {}
@@ -162,15 +204,16 @@ def run(source: Path, scratch: Path, output: Path) -> DynamicResult:
             scratch_root=scratch,
         )
     except EnvironmentError_ as exc:
-        return _failed(exc.reason_code, targets, exc.detail)
+        return _failed(exc.reason_code, targets, poc_plans, exc.detail)
     except Exception as exc:  # noqa: BLE001 - a manifest must still be emitted
-        return _failed(REASON_INTERNAL_FAILURE, targets, str(exc)[:512])
+        return _failed(REASON_INTERNAL_FAILURE, targets, poc_plans, str(exc)[:512])
 
     runner = ProbeRunner(
         application.base_url,
         echo_endpoint=str(service_hosts.get("echo") or "") or None,
     )
     outcomes: list[ProbeOutcome] = []
+    echo_endpoint = str(service_hosts.get("echo") or "") or None
     try:
         for target in targets:
             try:
@@ -184,6 +227,23 @@ def run(source: Path, scratch: Path, output: Path) -> DynamicResult:
                         verdict="inconclusive",
                         reason_code=REASON_CATEGORY_UNSUPPORTED,
                         detail=f"The probe raised before it could conclude: {exc}"[:4096],
+                    )
+                )
+        # Model-authored PoCs run against the same live application. The
+        # executor decides what each result means; the model wrote only the
+        # request.
+        executor = PocExecutor(application.base_url, echo_endpoint=echo_endpoint)
+        for poc_plan in poc_plans:
+            try:
+                outcomes.append(executor.run(poc_plan))
+            except Exception as exc:  # noqa: BLE001
+                outcomes.append(
+                    ProbeOutcome(
+                        finding_id=poc_plan.finding_id,
+                        category=poc_plan.category,
+                        verdict="inconclusive",
+                        reason_code=POC_PLAN_INVALID,
+                        detail=f"The PoC raised before it could conclude: {exc}"[:4096],
                     )
                 )
     finally:
@@ -212,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run(source, scratch, output)
     except Exception as exc:  # noqa: BLE001 - never leave an empty output dir
-        result = _failed(REASON_INTERNAL_FAILURE, [], str(exc)[:512])
+        result = _failed(REASON_INTERNAL_FAILURE, [], [], str(exc)[:512])
     _write_json(output / RESULT_FILENAME, result.model_dump(mode="json"))
     return 0
 

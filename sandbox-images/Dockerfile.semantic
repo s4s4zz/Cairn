@@ -33,6 +33,7 @@ COPY ./cairn/src/cairn/__init__.py /opt/cairn/lib/cairn/__init__.py
 COPY ./cairn/src/cairn/analysis /opt/cairn/lib/cairn/analysis
 COPY ./cairn/src/cairn/semantic /opt/cairn/lib/cairn/semantic
 COPY ./cairn/src/cairn/verify /opt/cairn/lib/cairn/verify
+COPY ./cairn/src/cairn/poc /opt/cairn/lib/cairn/poc
 
 RUN chmod 0555 /opt/cairn/bin/cairn-semantic-runner \
     && ln -s cairn-semantic-runner /opt/cairn/bin/run-semantic \

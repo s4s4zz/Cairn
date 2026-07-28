@@ -18,8 +18,14 @@ RUN apt-get update \
         ca-certificates \
         openjdk-17-jre-headless \
         python3-minimal \
+        python3-pip \
         python3-yaml \
     && rm -rf /var/lib/apt/lists/* \
+    # The dynamic runner validates every manifest with Pydantic v2, so it is a
+    # runtime dependency here exactly as `anthropic` is in the reviewer image.
+    # bookworm's python3-pydantic is v1, which the v2 contracts reject, so it is
+    # installed from the index and pip is removed immediately afterwards.
+    && pip install --break-system-packages --no-cache-dir "pydantic>=2.10,<3" \
     && java_home="$(dirname "$(dirname "$(readlink -f /usr/bin/java)")")" \
     && mkdir -p /opt/java \
     && ln -s "${java_home}" /opt/java/openjdk
@@ -40,16 +46,24 @@ COPY ./sandbox-images/echo_server.py /opt/cairn/bin/cairn-echo-server
 COPY ./cairn/src/cairn/__init__.py /opt/cairn/lib/cairn/__init__.py
 COPY ./cairn/src/cairn/analysis /opt/cairn/lib/cairn/analysis
 COPY ./cairn/src/cairn/dynamic /opt/cairn/lib/cairn/dynamic
+# The executor and the dynamic runner import cairn.poc.contracts. Only the
+# contract travels this path; cairn.poc.author needs the model SDK and is never
+# imported here.
+COPY ./cairn/src/cairn/poc /opt/cairn/lib/cairn/poc
 
 RUN chmod 0555 /opt/cairn/bin/cairn-validation-runner /opt/cairn/bin/cairn-echo-server \
     && ln -s cairn-validation-runner /opt/cairn/bin/run-validation \
     && ln -s cairn-echo-server /opt/cairn/bin/run-echo \
     # No package manager and no general network client. A probe that is talked
-    # into "just fetch and run this" has nothing to reach.
+    # into "just fetch and run this" has nothing to reach. pip was needed only
+    # to install Pydantic at build time and is removed here along with its
+    # console scripts.
     && rm -f \
         /usr/bin/wget /usr/bin/curl \
         /usr/bin/apt /usr/bin/apt-get /usr/bin/dpkg \
-        /usr/local/bin/pip /usr/local/bin/pip3
+        /usr/bin/pip /usr/bin/pip3 \
+        /usr/local/bin/pip /usr/local/bin/pip3 \
+    && rm -rf /usr/lib/python3*/dist-packages/pip /usr/lib/python3*/dist-packages/pip-*
 
 USER 65532:65532
 WORKDIR /work/source

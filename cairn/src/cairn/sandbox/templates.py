@@ -194,6 +194,10 @@ class TemplateRegistry:
                             # else — so it runs on this template rather than
                             # justifying a second image with identical rights.
                             SandboxOperation.INDEPENDENT_VERIFY,
+                            # The PoC Author (§7.7) shares the reviewer's
+                            # permissions — read-only source, the Tool Broker,
+                            # the Gateway — and, like it, has no target network.
+                            SandboxOperation.AUTHOR_POC,
                         }
                     ),
                     defaults=defaults,

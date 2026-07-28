@@ -11,6 +11,7 @@ from cairn.analysis.contracts import AnalysisManifest, AnalysisOperation
 from cairn.sandbox.contracts import SandboxArtifact
 from cairn.semantic.contracts import SemanticReviewResult
 from cairn.dynamic.contracts import DynamicResult
+from cairn.poc.contracts import PocResult
 from cairn.verify.contracts import VerifyResult
 from cairn.server.artifacts import ArtifactStore
 from cairn.server.domain.enums import ArtifactAccessLevel, ArtifactKind
@@ -197,6 +198,39 @@ class SandboxArtifactRegistrar:
                 "DYNAMIC_RESULT_INVALID",
                 "Dynamic verification result failed contract validation",
             ) from exc
+
+    def load_poc_result(
+        self,
+        artifact: Artifact,
+        *,
+        expected_finding_id: str,
+    ) -> PocResult:
+        """Read a `cairn-poc-plan-v1` out of a collected output TAR.
+
+        Same hardened member walk as the other loaders. The plan is
+        re-validated by `PocResult` here and again by the executor's contract
+        before it runs, so the platform-side gate applies on both sides.
+        """
+
+        payload, _seen = self._read_output_member(
+            artifact,
+            "poc-result.json",
+            missing_code="POC_RESULT_MISSING",
+            invalid_code="POC_RESULT_INVALID",
+        )
+        try:
+            result = PocResult.model_validate_json(payload)
+        except ValidationError as exc:
+            raise OrchestratorError(
+                "POC_RESULT_INVALID",
+                "PoC result failed contract validation",
+            ) from exc
+        if result.finding_id != expected_finding_id:
+            raise OrchestratorError(
+                "POC_FINDING_MISMATCH",
+                "PoC result does not match its AuditTask",
+            )
+        return result
 
     def _read_output_member(
         self,

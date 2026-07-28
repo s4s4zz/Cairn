@@ -5,6 +5,7 @@ import logging
 from pathlib import PurePosixPath
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,6 +39,14 @@ from cairn.orchestrator.dynamic_tasks import (
     plan_probe_targets,
 )
 from cairn.dynamic.contracts import DynamicResult, ProbeOutcome
+from cairn.dynamic.probes import PROBEABLE_CATEGORIES
+from cairn.poc.contracts import PocResult
+from cairn.orchestrator.poc_tasks import (
+    POC_AUTHOR_TOOL,
+    TRUNCATION_REASON as POC_TRUNCATION_REASON,
+    _METHOD_BY_ANNOTATION as _POC_METHOD_BY_ANNOTATION,
+    get_or_create_poc_task,
+)
 from cairn.orchestrator.verification import (
     TRUNCATION_REASON as VERIFY_TRUNCATION_REASON,
     VerificationBudget,
@@ -48,6 +57,8 @@ from cairn.pipeline.promote import promote_candidates
 from cairn.sandbox.contracts import (
     ACTIVE_SANDBOX_STATUSES,
     DynamicSandboxSpec,
+    PocAssignmentSpec,
+    PocPlanSpec,
     SandboxCreateRequest,
     SandboxLimitsOverride,
     SandboxOperation,
@@ -600,6 +611,246 @@ class DeterministicOrchestrator:
             AuditRunStatus.MACHINE_REVIEW,
         )
 
+    def _author_pocs(
+        self,
+        audit_run: AuditRun,
+        findings: list[Finding],
+        coverage: AuditCoverage,
+        budget: DynamicBudget,
+    ) -> list[PocPlanSpec]:
+        """Author PoCs for critical/high findings the built-in probes miss.
+
+        The author sees the model and the source and never the target — the
+        application does not exist yet. Its plans are validated against the
+        contract on return; a finding whose author produced no usable plan is
+        simply absent from the result and stays inconclusive.
+        """
+
+        by_fingerprint = self._discovered_by_fingerprint(audit_run)
+        candidates = [
+            finding
+            for finding in sorted(findings, key=lambda item: item.fingerprint)
+            if FindingSeverity(finding.severity) in REVIEW_REQUIRED_SEVERITIES
+            and finding.category not in PROBEABLE_CATEGORIES
+        ]
+        if not candidates:
+            return []
+
+        entrypoints = self._entrypoints_by_path(audit_run)
+        plans: list[PocPlanSpec] = []
+        authored = 0
+        for finding in candidates:
+            if authored >= budget.max_authored_pocs:
+                self._add_warning(
+                    coverage,
+                    POC_TRUNCATION_REASON,
+                    tool=POC_AUTHOR_TOOL,
+                    task_id=audit_run.id,
+                )
+                break
+            plan = self._author_one_poc(
+                audit_run,
+                finding,
+                entrypoints,
+                budget,
+                by_fingerprint.get(finding.fingerprint, [finding.discovered_by]),
+            )
+            authored += 1
+            if plan is not None:
+                plans.append(plan)
+        return plans
+
+    def _author_one_poc(
+        self,
+        audit_run: AuditRun,
+        finding: Finding,
+        entrypoints: dict[str, list[dict[str, object]]],
+        budget: DynamicBudget,
+        tools: list[str],
+    ) -> PocPlanSpec | None:
+        del tools
+        # The author is a model conversation, so its grant is sized by a
+        # conversation budget, not by the environment budget that governs how
+        # many findings are probed. The verification budget's shape
+        # (turns, output tokens per task) is exactly right and already read from
+        # policy for the blind reviewer.
+        grant_budget = VerificationBudget.from_policy(
+            getattr(getattr(audit_run, "policy", None), "verification_budget", None)
+        )
+        task = get_or_create_poc_task(self.session, audit_run, finding)
+        self.session.commit()
+        task = self.session.get(AuditTask, task.id)
+        assert task is not None
+        if task.status in {
+            AuditTaskStatus.SUCCEEDED.value,
+            AuditTaskStatus.FAILED.value,
+            AuditTaskStatus.SKIPPED.value,
+        }:
+            artifacts = self._task_artifacts(task)
+            if not artifacts:
+                return None
+            try:
+                result = SandboxArtifactRegistrar(
+                    self.session, self.artifact_store
+                ).load_poc_result(artifacts[-1], expected_finding_id=str(finding.id))
+            except OrchestratorError:
+                return None
+            return self._poc_plan_spec(finding, result)
+
+        task.status = AuditTaskStatus.RUNNING.value
+        task.worker_name = f"{self.settings.orchestrator_worker_name}:poc-author"
+        task.attempt += 1
+        task.started_at = task.started_at or datetime.now(UTC)
+        task.finished_at = None
+        task.error_code = None
+        self.session.commit()
+
+        snapshot = self.session.get(SourceSnapshot, audit_run.snapshot_id)
+        if snapshot is None:
+            raise OrchestratorError(
+                "ORCHESTRATOR_SNAPSHOT_REQUIRED",
+                "AuditTask Snapshot is unavailable",
+            )
+        try:
+            request = SandboxCreateRequest(
+                template=SandboxTemplateName.SEMANTIC,
+                operation=SandboxOperation.AUTHOR_POC,
+                snapshot=SnapshotArtifact(
+                    storage_key=snapshot.artifact.storage_key,
+                    sha256=snapshot.artifact.sha256,
+                    size_bytes=snapshot.artifact.size_bytes,
+                ),
+                task_id=task.id,
+                limits=SandboxLimitsOverride(timeout_seconds=task.timeout_seconds),
+                semantic=SemanticSandboxSpec(
+                    grant_token=self._mint_grant(audit_run, task, grant_budget),
+                    gateway_url=self.settings.llm_gateway_url,
+                    poc=self._poc_assignment(finding, entrypoints),
+                ),
+            )
+        except OrchestratorError as exc:
+            self._queue_or_fail_task(task, exc.error_code, False)
+            return None
+
+        sandbox_record = self._drive_model_sandbox(
+            audit_run, task, request, missing_result_code="POC_RESULT_MISSING"
+        )
+        if sandbox_record is None:
+            return None
+
+        registrar = SandboxArtifactRegistrar(self.session, self.artifact_store)
+        try:
+            artifact = registrar.register(
+                task, sandbox_record.artifacts[0], kind=ArtifactKind.SCAN_RESULT
+            )
+            result = registrar.load_poc_result(
+                artifact, expected_finding_id=str(finding.id)
+            )
+        except OrchestratorError as exc:
+            self._queue_or_fail_task(task, exc.error_code, False)
+            return None
+
+        task.finished_at = datetime.now(UTC)
+        task.sandbox_id = sandbox_record.id
+        if result.status == "completed":
+            task.status = AuditTaskStatus.SUCCEEDED.value
+            task.error_code = None
+        else:
+            task.status = AuditTaskStatus.FAILED.value
+            task.error_code = result.reason_code
+        self.session.commit()
+        return self._poc_plan_spec(finding, result)
+
+    def _poc_assignment(
+        self,
+        finding: Finding,
+        entrypoints: dict[str, list[dict[str, object]]],
+    ) -> PocAssignmentSpec:
+        record = self._entrypoint_record(finding, entrypoints)
+        annotations = (record or {}).get("annotations")
+        annotation = (
+            str(annotations[0])
+            if isinstance(annotations, list) and annotations
+            else "RequestMapping"
+        )
+        return PocAssignmentSpec(
+            finding_id=str(finding.id),
+            module=(
+                PurePosixPath(finding.locations[0].file_path).parts[0]
+                if finding.locations
+                else "."
+            ),
+            category=finding.category,
+            cwe_ids=[finding.cwe_id],
+            sink=None,
+            http_method=_POC_METHOD_BY_ANNOTATION.get(annotation, "GET"),
+            route=str(record["route"]) if record and record.get("route") else None,
+            route_prefixes=self._route_prefixes(record, entrypoints),
+            locations=[
+                VerifyLocationSpec(
+                    path=location.file_path,
+                    start_line=location.start_line,
+                    end_line=location.end_line,
+                    symbol=location.symbol,
+                    role=location.role,
+                )
+                for location in finding.locations[:MAX_VERIFY_LOCATIONS]
+            ],
+        )
+
+    def _poc_plan_spec(
+        self,
+        finding: Finding,
+        result: PocResult,
+    ) -> PocPlanSpec | None:
+        if result.plan is None:
+            return None
+        payload = result.plan.model_dump(mode="json")
+        payload["finding_id"] = str(finding.id)
+        try:
+            return PocPlanSpec.model_validate(payload)
+        except ValidationError:
+            # The plan validated inside the sandbox but not against the wire
+            # spec here — a version skew, say. Treat it as no plan rather than
+            # trusting a shape the executor's contract did not accept.
+            return None
+
+    def _entrypoints_by_path(
+        self,
+        audit_run: AuditRun,
+    ) -> dict[str, list[dict[str, object]]]:
+        mapping: dict[str, list[dict[str, object]]] = {}
+        for record in self._inventory_payload(audit_run)["entrypoints"]:
+            if isinstance(record, dict) and record.get("path"):
+                mapping.setdefault(str(record["path"]), []).append(record)
+        return mapping
+
+    def _entrypoint_record(
+        self,
+        finding: Finding,
+        entrypoints: dict[str, list[dict[str, object]]],
+    ) -> dict[str, object] | None:
+        for location in finding.locations:
+            for record in entrypoints.get(location.file_path, []):
+                if record.get("route"):
+                    return record
+        return None
+
+    def _route_prefixes(
+        self,
+        record: dict[str, object] | None,
+        entrypoints: dict[str, list[dict[str, object]]],
+    ) -> list[str]:
+        if record is None:
+            return []
+        path = str(record.get("path") or "")
+        prefixes: list[str] = []
+        for sibling in entrypoints.get(path, []):
+            route = sibling.get("route")
+            if route and sibling is not record and str(route) not in prefixes:
+                prefixes.append(str(route))
+        return prefixes[:8]
+
     def _run_dynamic_environment(
         self,
         audit_run: AuditRun,
@@ -649,7 +900,13 @@ class DeterministicOrchestrator:
                 tool=DYNAMIC_VERIFIER_NAME,
                 task_id=audit_run.id,
             )
-        if not plan.targets:
+        # Findings whose category the built-in probes do not cover get a
+        # model-authored PoC, written before the environment stands up. The
+        # author runs on the semantic template with no target network; the
+        # plans it produces run here, in the same one environment as the
+        # deterministic probes.
+        poc_plans = self._author_pocs(audit_run, findings, coverage, budget)
+        if not plan.targets and not poc_plans:
             return {}
 
         task = get_or_create_dynamic_task(self.session, audit_run)
@@ -720,6 +977,7 @@ class DeterministicOrchestrator:
                     app_port=int(runtime_plan.get("app_port") or 8080),
                     services=services,
                     targets=list(plan.targets),
+                    poc_plans=poc_plans,
                 ),
             )
         except (OrchestratorError, ValueError) as exc:

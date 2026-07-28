@@ -222,6 +222,10 @@ def main(argv: list[str] | None = None) -> int:
         from cairn.verify.runner import main as verify_main
 
         return verify_main(arguments)
+    if operation == "author-poc":
+        from cairn.poc.runner import main as poc_main
+
+        return poc_main(arguments)
 
     source = Path("/work/source")
     scratch = Path("/work/scratch")

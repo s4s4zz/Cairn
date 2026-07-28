@@ -191,14 +191,22 @@ class VerifySandbox(FakeSandbox):
         super().__init__(store, tmp_path, {})
         self.results = list(results or [])
         self.verify_requests: list[SandboxCreateRequest] = []
+        self.poc_requests: list[SandboxCreateRequest] = []
+        # finding_id -> poc-result payload. Absent means "the author declined",
+        # which is the default and keeps findings inconclusive.
+        self.poc_results: dict[str, dict[str, object]] = {}
 
     def create(self, request: SandboxCreateRequest) -> SandboxRecord:
         if request.operation is SandboxOperation.INDEPENDENT_VERIFY:
             self.verify_requests.append(request)
+        elif request.operation is SandboxOperation.AUTHOR_POC:
+            self.poc_requests.append(request)
         return super().create(request)
 
     def wait(self, sandbox_id: UUID, timeout_seconds: float) -> SandboxRecord:
         record = self.records[sandbox_id]
+        if record.operation is SandboxOperation.AUTHOR_POC:
+            return self._answer_poc(sandbox_id)
         if record.operation is not SandboxOperation.INDEPENDENT_VERIFY:
             return super().wait(sandbox_id, timeout_seconds)
         key = self.verify_requests[-1].semantic.candidate.root_cause_key
@@ -207,6 +215,45 @@ class VerifySandbox(FakeSandbox):
         encoded = json.dumps(payload).encode()
         with tarfile.open(archive_path, mode="w") as archive:
             info = tarfile.TarInfo("verify-result.json")
+            info.size = len(encoded)
+            archive.addfile(info, BytesIO(encoded))
+        stored = self.store.put_file(archive_path)
+        completed = record.model_copy(
+            update={
+                "status": SandboxStatus.SUCCEEDED,
+                "finished_at": datetime.now(UTC),
+                "exit_code": 0,
+                "artifacts": [
+                    SandboxArtifact(
+                        storage_key=stored.storage_key,
+                        sha256=stored.sha256,
+                        size_bytes=stored.size_bytes,
+                        media_type="application/x-tar",
+                    )
+                ],
+                "resources_destroyed": True,
+            }
+        )
+        self.records[sandbox_id] = completed
+        return completed
+
+    def _answer_poc(self, sandbox_id: UUID) -> SandboxRecord:
+        record = self.records[sandbox_id]
+        finding_id = str(self.poc_requests[-1].semantic.poc.finding_id)
+        payload = self.poc_results.get(finding_id) or {
+            "contract": "cairn-poc-plan-v1",
+            "status": "failed",
+            "tool_name": "poc-author",
+            "model": "claude-opus-5",
+            "finding_id": finding_id,
+            "reason_code": "POC_MODEL_REFUSED",
+            "plan": None,
+            "warnings": [],
+        }
+        archive_path = self.tmp_path / f"{sandbox_id}-poc.tar"
+        encoded = json.dumps(payload).encode()
+        with tarfile.open(archive_path, mode="w") as archive:
+            info = tarfile.TarInfo("poc-result.json")
             info.size = len(encoded)
             archive.addfile(info, BytesIO(encoded))
         stored = self.store.put_file(archive_path)

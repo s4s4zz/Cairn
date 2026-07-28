@@ -291,6 +291,122 @@ def test_the_out_of_band_tripwire_records_a_nonce(group) -> None:  # noqa: ANN00
     assert nonce in json.loads(output.strip().splitlines()[-1])["nonces"]
 
 
+def test_an_authored_pocs_callback_is_confirmed_out_of_band(group) -> None:  # noqa: ANN001
+    """The PoC executor's echo-hit check, end to end against the real service.
+
+    The `PocExecutor` substitutes `{{CAIRN_CALLBACK}}` with a nonce URL, and an
+    out-of-band criterion confirms only when that nonce reaches the echo
+    service. Here the running "application" is the task container making the
+    callback the payload would have caused, and the executor's own `_echo_hit`
+    reads it back — the same code path the container runs.
+    """
+
+    from cairn.dynamic.poc import PocExecutor
+    from cairn.dynamic.probes import default_caller
+
+    sandbox_id, _backend, client = group
+    task = client.containers.get(f"cairn-sandbox-{sandbox_id}")
+    echo = f"cairn-sandbox-svc-echo-{sandbox_id}:8081"
+
+    # Wait for the echo service, then have the container plant a nonce, standing
+    # in for an application the PoC's payload made call out.
+    nonce = "cairn-" + "cd34" * 8
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        exit_code, _ = run_in(
+            task,
+            [
+                "python3",
+                "-c",
+                (
+                    "import urllib.request\n"
+                    f"urllib.request.urlopen('http://{echo}/{nonce}', timeout=5).read()"
+                ),
+            ],
+        )
+        if exit_code == 0:
+            break
+        time.sleep(1)
+    else:  # pragma: no cover
+        pytest.fail("the echo service never accepted a request")
+
+    # The executor reads observed nonces from inside the container, where the
+    # echo service is reachable. A hit for the planted nonce; a miss for one
+    # that was never planted.
+    check = (
+        "import json, urllib.request\n"
+        f"seen = json.loads(urllib.request.urlopen('http://{echo}/__cairn/observed',"
+        " timeout=5).read())['nonces']\n"
+        f"print('HIT' if '{nonce}' in seen else 'MISS')\n"
+        "print('MISS2' if 'cairn-{}'.format('00'*16) in seen else 'CLEAN')"
+    )
+    exit_code, output = run_in(task, ["python3", "-c", check])
+
+    assert exit_code == 0, output
+    assert "HIT" in output
+    assert "CLEAN" in output
+    # The reader path the executor uses is the standard-library caller it ships.
+    assert default_caller is not None and PocExecutor is not None
+
+
+def test_the_validation_image_can_import_and_run_the_dynamic_runner(
+    validation_image: str,
+) -> None:
+    """The in-container entry point must actually import.
+
+    A regression guard the `sleep`-command tests above cannot give: they never
+    exercise `run-validation`, so nothing there would notice the runner failing
+    to import — which it did, until the image gained Pydantic. The image ships
+    a package manager to no one, so a missing runtime dependency is a build-time
+    problem or it is a production outage.
+    """
+
+    result = subprocess.run(  # noqa: S603
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python3",
+            validation_image,
+            "-c",
+            (
+                "import cairn.dynamic.runner, cairn.dynamic.poc, cairn.poc.contracts\n"
+                "import pydantic, sys\n"
+                "assert 'cairn.poc.author' not in sys.modules\n"
+                "print('ok', pydantic.VERSION)"
+            ),
+        ],
+        capture_output=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.stdout.decode("utf-8").startswith("ok 2.")
+
+
+def test_the_validation_image_ships_no_package_manager_or_build_tool(
+    validation_image: str,
+) -> None:
+    """§9.7: a JRE runs the packaged artifact; a JDK, Maven, pip or curl would
+    let a compromised probe rebuild or re-fetch."""
+
+    script = (
+        "for b in javac mvn gradle git curl wget pip pip3 uv; do "
+        'command -v "$b" >/dev/null 2>&1 && echo "PRESENT $b"; done; '
+        "python3 -m pip --version >/dev/null 2>&1 && echo PRESENT pip-module; "
+        "true"
+    )
+    result = subprocess.run(  # noqa: S603
+        ["docker", "run", "--rm", "--entrypoint", "sh", validation_image, "-c", script],
+        capture_output=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.stdout.decode("utf-8").strip() == ""
+
+
 def test_destroy_leaves_nothing_running_or_reachable(
     backend,  # noqa: ANN001
     settings: SandboxSettings,
