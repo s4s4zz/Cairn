@@ -29,8 +29,10 @@ from cairn.verify.contracts import (
     VERIFY_TOOL_NAME,
     WARN_NO_DEFEATING_CONTROL,
     WARN_NO_REBUILT_CHAIN,
+    verify_output_schema,
 )
 from cairn.verify.prompt import (
+    FINAL_ANSWER_REQUEST,
     INDEPENDENT_REVIEW_SYSTEM_PROMPT,
     VerifyAssignment,
     assignment_instruction,
@@ -430,6 +432,28 @@ def test_the_system_prompt_carries_no_repository_bytes() -> None:
 
     assert "{" not in INDEPENDENT_REVIEW_SYSTEM_PROMPT.replace("{}", "")
     assert ROOT_CAUSE_KEY not in INDEPENDENT_REVIEW_SYSTEM_PROMPT
+
+
+def test_every_prose_field_of_the_verdict_asks_for_chinese() -> None:
+    """The verdict is shown beside the Finding it settles, so it is read in the
+    same language. The schema states it at output time and the prompt states it
+    first; a requirement on only one of them rests on which the model weighs."""
+
+    properties = verify_output_schema()["properties"]
+
+    for field in ("reasoning", "reachability", "defeating_control"):
+        assert "中文" in properties[field]["description"], field
+    assert "中文" in properties["call_chain"]["items"]["properties"]["note"][
+        "description"
+    ]
+
+    assert "Simplified Chinese" in INDEPENDENT_REVIEW_SYSTEM_PROMPT
+    assert "Simplified Chinese" in FINAL_ANSWER_REQUEST
+    for field in ("`reasoning`", "`reachability`", "`defeating_control`"):
+        assert field in INDEPENDENT_REVIEW_SYSTEM_PROMPT, field
+    # File and line citations have to survive it, or a Chinese verdict stops
+    # being retraceable.
+    assert "verbatim" in INDEPENDENT_REVIEW_SYSTEM_PROMPT
 
 
 def test_a_misplaced_operator_message_is_a_defect_not_a_degraded_mode() -> None:

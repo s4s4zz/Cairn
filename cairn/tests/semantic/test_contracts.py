@@ -23,6 +23,7 @@ from cairn.semantic.contracts import (
     semantic_output_schema,
 )
 from cairn.semantic.findings import parse_findings, to_candidates
+from cairn.semantic.prompt import JAVA_AUDIT_SYSTEM_PROMPT
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "injected-app"
@@ -397,6 +398,37 @@ def test_output_schema_offers_no_confirmed_confidence() -> None:
 def test_output_schema_contract_literal_matches_the_result_contract() -> None:
     assert SEMANTIC_CONTRACT == "cairn-semantic-result-v1"
     assert SEMANTIC_TOOL_NAME == "semantic-reviewer"
+
+
+def test_every_prose_field_asks_for_chinese_on_both_channels() -> None:
+    """The workbench and the report are Chinese; the prose that fills them has
+    to be too. The schema description is the constraint the model sees at output
+    time, and the system prompt is the one it reads first — both must say so, or
+    the requirement rests on whichever one the model happened to weigh."""
+
+    finding_schema = semantic_output_schema()["properties"]["findings"]["items"]
+    properties = finding_schema["properties"]
+    prose = (
+        "message",
+        "controllability",
+        "attack_preconditions",
+        "impact",
+        "recommended_verification",
+    )
+
+    for field in prose:
+        assert "中文" in properties[field]["description"], field
+    assert "中文" in properties["existing_defenses"]["items"]["properties"][
+        "reasoning"
+    ]["description"]
+    assert "中文" in properties["call_chain"]["items"]["properties"]["note"]["description"]
+
+    assert "Simplified Chinese" in JAVA_AUDIT_SYSTEM_PROMPT
+    for field in prose:
+        assert f"`{field}`" in JAVA_AUDIT_SYSTEM_PROMPT, field
+    # Identity must survive the translation: a Chinese sentence about
+    # `OrderMapper.selectByExample` is right, a translated identifier is not.
+    assert "verbatim" in JAVA_AUDIT_SYSTEM_PROMPT
 
 
 def test_to_candidates_produces_valid_candidate_findings() -> None:

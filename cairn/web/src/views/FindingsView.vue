@@ -10,7 +10,7 @@ import SeverityBadge from "@/components/SeverityBadge.vue";
 import StatePanel from "@/components/StatePanel.vue";
 import StatusBadge from "@/components/StatusBadge.vue";
 import type { Finding, FindingSeverity, FindingStatus } from "@/types/api";
-import { errorMessage, formatDate, shortId } from "@/utils";
+import { categoryLabel, errorMessage, formatDate, shortId } from "@/utils";
 
 const route = useRoute();
 const router = useRouter();
@@ -73,7 +73,7 @@ onMounted(load);
   <StatePanel v-else-if="error" kind="error" :message="error" retryable @retry="load" />
   <StatePanel v-else-if="!items.length" kind="empty" title="没有符合条件的漏洞" />
   <div v-else class="table-wrap"><table class="data-table findings-table"><thead><tr><th style="width:34%">漏洞</th><th style="width:13%">严重性</th><th style="width:20%">状态</th><th style="width:14%">验证</th><th style="width:19%">更新时间</th></tr></thead><tbody>
-    <tr v-for="finding in items" :key="finding.id"><td><RouterLink class="row-link cell-main" :to="`/findings/${finding.id}`">{{ finding.title }}</RouterLink><span class="cell-sub">{{ finding.cwe_id }} · {{ finding.category }} · {{ shortId(finding.id) }}</span></td><td><SeverityBadge :value="finding.severity" /></td><td><StatusBadge :value="finding.status" /></td><td><StatusBadge :value="finding.runtime_verification" /></td><td class="muted nowrap">{{ formatDate(finding.updated_at) }}</td></tr>
+    <tr v-for="finding in items" :key="finding.id"><td><RouterLink class="row-link cell-main" :to="`/findings/${finding.id}`">{{ finding.title }}</RouterLink><span class="cell-sub">{{ finding.cwe_id }} · {{ categoryLabel(finding.category) }} · {{ shortId(finding.id) }}</span></td><td><SeverityBadge :value="finding.severity" /></td><td><StatusBadge :value="finding.status" /></td><td><StatusBadge :value="finding.runtime_verification" /></td><td class="muted nowrap">{{ formatDate(finding.updated_at) }}</td></tr>
   </tbody></table><PaginationBar :total="total" :offset="offset" :limit="limit" @change="changePage" /></div>
 </template>
 

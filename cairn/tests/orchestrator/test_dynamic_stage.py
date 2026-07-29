@@ -386,7 +386,11 @@ def test_the_probe_exchanges_are_saved_as_evidence(
         if evidence.type == EvidenceType.HTTP_EXCHANGE.value
     ]
     assert exchanges
-    assert any("elapsed" in evidence.summary or "ms" in evidence.summary for evidence in exchanges)
+    assert any("毫秒" in evidence.summary for evidence in exchanges)
+    assert all(
+        evidence.summary.split("：", 1)[0] in {"基线请求", "攻击请求"}
+        for evidence in exchanges
+    )
 
 
 # --- what still cannot produce a runtime verdict ------------------------------

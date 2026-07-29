@@ -62,7 +62,7 @@ def test_symbolic_sql_call_becomes_an_honest_bytecode_candidate() -> None:
     candidate = candidates[0]
     assert candidate.cwe_ids == ["CWE-89"]
     assert candidate.confidence.value == "low"
-    assert "not been established" in candidate.message
+    assert "尚未确认" in candidate.message
     location = candidate.locations[0]
     assert location.origin_kind == "bytecode"
     assert location.entry_path == "WEB-INF/classes/app/Action.class"

@@ -365,14 +365,14 @@ def test_report_generation_completes_run_and_downloads_all_formats(
         f"/api/v1/reports/{report['id']}", params={"format": "sarif"}
     )
     assert html.status_code == machine.status_code == sarif.status_code == 200
-    assert "Cairn Java Audit Report" in html.text
-    assert "Attack preconditions" in html.text
+    assert "Cairn Java 代码审计报告" in html.text
+    assert "攻击前提" in html.text
     assert "Attacker controls input." in html.text
-    assert "Call chain and locations" in html.text
-    assert "Machine verification" in html.text
+    assert "调用链与代码定位" in html.text
+    assert "机器验证" in html.text
     assert "Independent trace reaches the same sink." in html.text
-    assert "Skipped paths" in html.text
-    assert "Unsupported components" in html.text
+    assert "跳过的路径" in html.text
+    assert "不支持的组件" in html.text
     assert machine.json()["schema_version"] == "cairn-report-v1"
     assert sarif.json()["version"] == "2.1.0"
     assert sarif.json()["runs"][0]["results"][0]["ruleId"] == "CWE-89"

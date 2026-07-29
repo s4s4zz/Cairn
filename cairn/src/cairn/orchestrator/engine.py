@@ -1371,8 +1371,8 @@ class DeterministicOrchestrator:
         if task_id is None:
             return
         for label, exchange in (
-            ("baseline", outcome.baseline),
-            ("payload", outcome.payload),
+            ("基线请求", outcome.baseline),
+            ("攻击请求", outcome.payload),
         ):
             if exchange is None:
                 continue
@@ -1380,9 +1380,9 @@ class DeterministicOrchestrator:
                 finding,
                 evidence_type=EvidenceType.HTTP_EXCHANGE,
                 summary=(
-                    f"{label}: {exchange.method} {exchange.url} -> "
-                    f"{exchange.status_code} in {exchange.elapsed_ms} ms"
-                    f"{' (echo hit)' if label == 'payload' and outcome.echo_observed else ''}"
+                    f"{label}：{exchange.method} {exchange.url} -> "
+                    f"{exchange.status_code}，耗时 {exchange.elapsed_ms} 毫秒"
+                    f"{'（收到带外回连）' if label == '攻击请求' and outcome.echo_observed else ''}"
                 )[:2048],
                 produced_by_task_id=task_id,
             )
@@ -1393,14 +1393,12 @@ class DeterministicOrchestrator:
         if mode == DynamicVerificationMode.DISABLED.value:
             return (
                 "DYNAMIC_VERIFICATION_DISABLED",
-                "The audit policy disables dynamic verification, so no runtime "
-                "evidence was gathered for this finding.",
+                "审计策略关闭了动态验证，因此本 Finding 没有采集到运行期证据。",
             )
         return (
             "DYNAMIC_ENVIRONMENT_UNAVAILABLE",
-            "No dynamic verification environment was available, so the finding "
-            "could not be exercised at runtime. Per §7.7 an unavailable "
-            "environment yields an inconclusive verdict and never a rejection.",
+            "没有可用的动态验证环境，因此无法在运行期实际触发本 Finding。"
+            "按 §7.7，环境不可用只能得出「无法判定」，绝不能据此驳回。",
         )
 
     def _promote_findings(
@@ -1480,8 +1478,7 @@ class DeterministicOrchestrator:
                     finding,
                     evidence_type=EvidenceType.TOOL_RESULT,
                     summary=(
-                        "Raw tool output the candidate was normalised from "
-                        f"({command.discovered_by})."
+                        f"该候选归一化前的工具原始输出（{command.discovered_by}）。"
                     ),
                     produced_by_task_id=fact.created_by_task_id,
                     artifact_id=artifact_id,
@@ -1559,9 +1556,8 @@ class DeterministicOrchestrator:
                         verdict=blind_verdict,
                         verifier=VERIFY_TOOL_NAME,
                         reasoning=(
-                            "The run's independent-review budget of "
-                            f"{budget.max_findings} findings was exhausted "
-                            "before this finding was reached."
+                            f"本次运行的独立复核预算（{budget.max_findings} 条 Finding）"
+                            "在轮到该 Finding 之前已经用尽。"
                         ),
                         discovered_by=tools,
                     )
@@ -1865,9 +1861,8 @@ class DeterministicOrchestrator:
                 verdict=VerificationVerdict.INCONCLUSIVE,
                 verifier=VERIFY_TOOL_NAME,
                 reasoning=(
-                    "The independent review did not conclude "
-                    f"({reason}). An unusable review yields inconclusive, "
-                    "never a rejection."
+                    f"独立复核没有得出结论（{reason}）。"
+                    "无法采信的复核只能得出「无法判定」，绝不会变成驳回。"
                 ),
                 discovered_by=tools,
             )
@@ -1878,7 +1873,7 @@ class DeterministicOrchestrator:
             evidence = service.record_evidence(
                 finding,
                 evidence_type=EvidenceType.TOOL_RESULT,
-                summary="Independent blind review transcript and verdict.",
+                summary="独立盲审的会话记录与结论。",
                 produced_by_task_id=task.id,
                 artifact_id=artifact.id,
                 sha256=artifact.sha256,

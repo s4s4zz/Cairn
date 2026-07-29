@@ -20,6 +20,77 @@ def _line(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+# Hoisted to module scope so the patterns compile once, and so a test can
+# assert that every `category` this table assigns has a Chinese display label
+# in `cairn.pipeline.catalogue.CATEGORY_LABELS`. The `message` is Cairn's own
+# statement about the weakness — unlike a third-party scanner's rule text,
+# which passes through untranslated — so it is written in Chinese.
+_RULES: tuple[
+    tuple[re.Pattern[str], set[str], str, str, str, list[str], str], ...
+] = (
+    (
+        re.compile(
+            r"(?im)^\s*(?:management\.endpoints\.web\.exposure\.include"
+            r"|include)\s*[:=]\s*[\"']?\*[\"']?\s*$"
+        ),
+        {"application.properties", "application.yml", "application.yaml"},
+        "CAIRN-SPRING-ACTUATOR-EXPOSE-ALL",
+        "Spring 管理端点将全部 actuator 端点对外暴露",
+        "high",
+        ["CWE-284"],
+        "spring-config",
+    ),
+    (
+        re.compile(
+            r"(?im)^\s*(?:server\.error\.include-stacktrace"
+            r"|include-stacktrace)\s*[:=]\s*always\s*$"
+        ),
+        {"application.properties", "application.yml", "application.yaml"},
+        "CAIRN-SPRING-STACKTRACE-DISCLOSURE",
+        "Spring 错误响应始终包含堆栈信息",
+        "medium",
+        ["CWE-209"],
+        "spring-config",
+    ),
+    (
+        re.compile(r"(?im)^\s*USER\s+(?:root|0)(?::0)?\s*$"),
+        {"dockerfile"},
+        "CAIRN-DOCKER-ROOT-USER",
+        "容器被显式配置为以 root 身份运行",
+        "medium",
+        ["CWE-250"],
+        "container-config",
+    ),
+    (
+        re.compile(r"(?im)^\s*privileged\s*:\s*true\s*$"),
+        {".yaml", ".yml"},
+        "CAIRN-K8S-PRIVILEGED",
+        "Kubernetes 工作负载开启了特权模式",
+        "high",
+        ["CWE-250"],
+        "kubernetes",
+    ),
+    (
+        re.compile(r"(?im)^\s*host(?:Network|PID|IPC)\s*:\s*true\s*$"),
+        {".yaml", ".yml"},
+        "CAIRN-K8S-HOST-NAMESPACE",
+        "Kubernetes 工作负载加入了宿主机命名空间",
+        "high",
+        ["CWE-668"],
+        "kubernetes",
+    ),
+    (
+        re.compile(r"""(?i)["']0\.0\.0\.0/0["']"""),
+        {".tf", ".tfvars"},
+        "CAIRN-TERRAFORM-WORLD-OPEN",
+        "Terraform 网络规则放通了整个 IPv4 互联网",
+        "high",
+        ["CWE-284"],
+        "terraform",
+    ),
+)
+
+
 def scan_config(
     root: Path,
     *,
@@ -28,68 +99,6 @@ def scan_config(
     root = root.resolve()
     catalog = SourceCatalog(root)
     candidates: list[dict[str, object]] = []
-    rules = (
-        (
-            re.compile(
-                r"(?im)^\s*(?:management\.endpoints\.web\.exposure\.include"
-                r"|include)\s*[:=]\s*[\"']?\*[\"']?\s*$"
-            ),
-            {"application.properties", "application.yml", "application.yaml"},
-            "CAIRN-SPRING-ACTUATOR-EXPOSE-ALL",
-            "Spring management endpoints expose all actuator endpoints",
-            "high",
-            ["CWE-284"],
-            "spring-config",
-        ),
-        (
-            re.compile(
-                r"(?im)^\s*(?:server\.error\.include-stacktrace"
-                r"|include-stacktrace)\s*[:=]\s*always\s*$"
-            ),
-            {"application.properties", "application.yml", "application.yaml"},
-            "CAIRN-SPRING-STACKTRACE-DISCLOSURE",
-            "Spring error responses always include stack traces",
-            "medium",
-            ["CWE-209"],
-            "spring-config",
-        ),
-        (
-            re.compile(r"(?im)^\s*USER\s+(?:root|0)(?::0)?\s*$"),
-            {"dockerfile"},
-            "CAIRN-DOCKER-ROOT-USER",
-            "Container explicitly runs as root",
-            "medium",
-            ["CWE-250"],
-            "container-config",
-        ),
-        (
-            re.compile(r"(?im)^\s*privileged\s*:\s*true\s*$"),
-            {".yaml", ".yml"},
-            "CAIRN-K8S-PRIVILEGED",
-            "Kubernetes workload enables privileged mode",
-            "high",
-            ["CWE-250"],
-            "kubernetes",
-        ),
-        (
-            re.compile(r"(?im)^\s*host(?:Network|PID|IPC)\s*:\s*true\s*$"),
-            {".yaml", ".yml"},
-            "CAIRN-K8S-HOST-NAMESPACE",
-            "Kubernetes workload joins a host namespace",
-            "high",
-            ["CWE-668"],
-            "kubernetes",
-        ),
-        (
-            re.compile(r"""(?i)["']0\.0\.0\.0/0["']"""),
-            {".tf", ".tfvars"},
-            "CAIRN-TERRAFORM-WORLD-OPEN",
-            "Terraform network rule allows the entire IPv4 Internet",
-            "high",
-            ["CWE-284"],
-            "terraform",
-        ),
-    )
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or not path.is_file():
             continue
@@ -107,7 +116,7 @@ def scan_config(
             severity,
             cwes,
             category,
-        ) in rules:
+        ) in _RULES:
             if basename not in names and suffix not in names:
                 continue
             for match in pattern.finditer(content):

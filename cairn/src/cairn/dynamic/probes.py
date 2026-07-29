@@ -164,8 +164,8 @@ class ProbeRunner:
                 target,
                 REASON_CATEGORY_UNSUPPORTED,
                 (
-                    f"No deterministic probe exists for the {target.category!r} "
-                    "category; this finding was not exercised at runtime."
+                    f"{target.category!r} 类别没有对应的确定性探测，"
+                    "本 Finding 未在运行期被实际触发验证。"
                 ),
             )
         routes = self.candidate_routes(target)
@@ -173,10 +173,7 @@ class ProbeRunner:
             return _inconclusive(
                 target,
                 REASON_ROUTE_UNKNOWN,
-                (
-                    "The index recorded no route for this entrypoint, so no "
-                    "request could be addressed to it."
-                ),
+                "索引中没有记录该入口的路由，因此无法向它发起请求。",
             )
         return handler(self, target, routes)
 
@@ -300,23 +297,23 @@ class ProbeRunner:
                 target,
                 baseline,
                 payload,
-                "The payload produced a SQL syntax or driver error in the "
-                "response, so the value reached the SQL parser as syntax.",
+                "载荷 `1' OR '1'='1` 在响应中触发了 SQL 语法错误或驱动报错，"
+                "说明该取值是作为语法进入 SQL 解析器的。",
             )
         if _diverged(baseline, payload):
             return _confirmed(
                 target,
                 baseline,
                 payload,
-                "The quoted payload changed the response where a literal value "
-                "did not, which is the signature of unparameterised SQL.",
+                "带引号的载荷 `1' OR '1'='1` 改变了响应，而普通字面量取值没有，"
+                "这是 SQL 未参数化的典型特征。",
             )
         return _rejected(
             target,
             baseline,
             payload,
-            "The payload produced no SQL error and no change in the response; "
-            "the value does not appear to reach the SQL parser as syntax.",
+            "载荷 `1' OR '1'='1` 既未触发 SQL 报错，也未使响应发生变化；"
+            "该取值看起来不会作为语法进入 SQL 解析器。",
         )
 
     def _probe_path_traversal(
@@ -341,15 +338,14 @@ class ProbeRunner:
                 target,
                 baseline,
                 payload,
-                "The response contained the contents of /etc/passwd, so the "
-                "traversal sequence resolved outside the intended directory.",
+                "响应中返回了 /etc/passwd 的内容，说明载荷 "
+                "`../../../../etc/passwd` 的穿越序列被解析到了预期目录之外。",
             )
         return _rejected(
             target,
             baseline,
             payload,
-            "The traversal sequence did not return a file outside the intended "
-            "directory.",
+            "载荷 `../../../../etc/passwd` 的穿越序列没有取到预期目录之外的文件。",
         )
 
     def _probe_out_of_band(
@@ -365,8 +361,7 @@ class ProbeRunner:
             return _inconclusive(
                 target,
                 REASON_CATEGORY_UNSUPPORTED,
-                "No echo service was available, so no out-of-band confirmation "
-                "was possible for this category.",
+                "本次运行没有可用的 echo 服务，因此无法对该类别做带外回连确认。",
             )
         located = self._baseline(target, routes)
         if located is None:
@@ -404,12 +399,10 @@ class ProbeRunner:
             routes,
             build_value=lambda echo, nonce: f"http://{echo}/{nonce}",
             confirmed_detail=(
-                "The application fetched a URL supplied in the request: the "
-                "planted nonce arrived at the isolated echo service."
+                "应用请求了由本次请求提供的 URL：植入的 nonce 抵达了隔离的 echo 服务。"
             ),
             rejected_detail=(
-                "The supplied URL was not fetched; no request carrying the "
-                "nonce reached the echo service."
+                "所提供的 URL 未被请求；没有任何携带该 nonce 的请求抵达 echo 服务。"
             ),
         )
 
@@ -427,12 +420,10 @@ class ProbeRunner:
                 "<cairn>&x;</cairn>"
             ),
             confirmed_detail=(
-                "The XML parser resolved an external entity: the planted nonce "
-                "arrived at the isolated echo service."
+                "XML 解析器解析了外部实体：植入的 nonce 抵达了隔离的 echo 服务。"
             ),
             rejected_detail=(
-                "The external entity was not resolved; no request carrying the "
-                "nonce reached the echo service."
+                "外部实体未被解析；没有任何携带该 nonce 的请求抵达 echo 服务。"
             ),
         )
 
@@ -462,24 +453,22 @@ class ProbeRunner:
                 target,
                 baseline,
                 payload,
-                f"The request carrying `; sleep {SLEEP_SECONDS}` took "
-                f"{delay} ms longer than the baseline, so the shell metacharacter "
-                "was interpreted rather than treated as data.",
+                f"携带 `; sleep {SLEEP_SECONDS}` 的请求比基线请求慢了 {delay} 毫秒，"
+                "说明该 shell 元字符被解释执行，而不是被当作数据处理。",
             )
         if PASSWD_MARKER in payload_body:
             return _confirmed(
                 target,
                 baseline,
                 payload,
-                "The response reflected command output, so the injected command "
-                "was executed.",
+                "响应中回显了命令输出，说明注入的命令被执行了。",
             )
         return _rejected(
             target,
             baseline,
             payload,
-            "Neither a timing difference nor reflected command output appeared; "
-            "the value does not appear to reach a shell.",
+            f"既没有出现时间差，也没有回显命令输出（载荷 `; sleep {SLEEP_SECONDS}`）；"
+            "该取值看起来不会进入 shell。",
         )
 
 
@@ -563,10 +552,8 @@ def _route_not_served(target: ProbeTarget) -> ProbeOutcome:
         target,
         REASON_ROUTE_UNKNOWN,
         (
-            "None of the candidate routes was served by the running "
-            "application, so the entrypoint could not be reached. The index "
-            "does not resolve class-level @RequestMapping prefixes, which is "
-            "the usual cause."
+            "候选路由中没有一条被运行中的应用响应，因此无法抵达该入口。"
+            "常见原因是索引无法解析类级别的 @RequestMapping 前缀。"
         ),
     )
 
@@ -581,7 +568,7 @@ def _transport_failed(
     return _inconclusive(
         target,
         REASON_REQUEST_FAILED,
-        f"The payload request did not complete: {payload.error}",
+        f"携带载荷的请求未能完成：{payload.error}",
         baseline=baseline,
         payload=payload,
         nonce=nonce,

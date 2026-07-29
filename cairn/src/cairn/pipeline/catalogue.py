@@ -15,6 +15,13 @@ Keyed on CWE rather than on category, because ``category`` is open vocabulary
 — :func:`cairn.analysis.normalizers._category` slugifies whatever a scanner
 emitted — while CWE is closed and is the field the Finding contract actually
 requires.
+
+The prose is Simplified Chinese because the reviewers who act on it read
+Chinese; Java and Spring API names, configuration keys and code stay verbatim,
+because those are what a reader has to search the codebase for.
+:data:`CATEGORY_LABELS` is the display side of the same rule: the stored
+``category`` remains an ASCII slug — it keys probe selection, scope keys and
+budget filters — and the Chinese label is only ever rendered.
 """
 
 from __future__ import annotations
@@ -62,210 +69,161 @@ OWASP_BY_CWE: dict[str, str] = {
 # Java- and Spring-specific where that adds something a reader could act on.
 REMEDIATION_BY_CWE: dict[str, str] = {
     "CWE-16": (
-        "Correct the framework configuration rather than adding a compensating "
-        "check at the call site. Review the effective Spring Security filter "
-        "chain, servlet and actuator exposure, CORS origins and error-page "
-        "settings for this module, and pin the intended values in configuration "
-        "that ships with the build rather than in an environment-specific "
-        "override."
+        "修正框架配置本身，而不是在调用点补一道补偿性校验。逐项确认该模块实际生效的 "
+        "Spring Security 过滤器链、Servlet 与 actuator 暴露面、CORS 允许来源和错误页设置，"
+        "并把预期取值固化在随构建一起发布的配置里，而不是放在某个环境专属的覆盖文件中。"
     ),
     "CWE-22": (
-        "Do not build filesystem paths from request input. Resolve the "
-        "user-supplied name against a fixed base directory, canonicalise with "
-        "`Path.normalize().toRealPath()`, and reject anything whose resolved "
-        "path does not start with that base. Prefer mapping an opaque "
-        "identifier to a server-side path over accepting a path at all."
+        "不要用请求输入拼接文件系统路径。把用户提供的名称解析到一个固定的基准目录之下，"
+        "用 `Path.normalize().toRealPath()` 规范化，并拒绝任何解析结果不以该基准目录开头的路径。"
+        "更好的做法是让请求只携带一个不透明标识符，由服务端映射到真实路径，从根本上不接受路径参数。"
     ),
     "CWE-77": (
-        "Do not assemble a shell command from request input. Use "
-        "`ProcessBuilder` with an argument list so no shell parses the string, "
-        "and validate each argument against an allowlist. If a shell is truly "
-        "required, the argument must come from a fixed set of constants."
+        "不要用请求输入拼接 shell 命令。改用 `ProcessBuilder` 并以参数列表方式传参，"
+        "使得不存在任何 shell 去解析这个字符串；同时对每个参数做白名单校验。"
+        "若确实必须经过 shell，则该参数只能取自一组固定常量。"
     ),
     "CWE-78": (
-        "Do not assemble a shell command from request input. Use "
-        "`ProcessBuilder` with an argument list so no shell parses the string, "
-        "and validate each argument against an allowlist. If a shell is truly "
-        "required, the argument must come from a fixed set of constants."
+        "不要用请求输入拼接 shell 命令。改用 `ProcessBuilder` 并以参数列表方式传参，"
+        "使得不存在任何 shell 去解析这个字符串；同时对每个参数做白名单校验。"
+        "若确实必须经过 shell，则该参数只能取自一组固定常量。"
     ),
     "CWE-79": (
-        "Encode on output for the context the value lands in — HTML body, "
-        "attribute, JavaScript or URL — rather than sanitising on input. In "
-        "Thymeleaf prefer `th:text` over `th:utext`; where markup genuinely "
-        "must be rendered, pass it through a configured sanitiser allowlist."
+        "按值最终落地的上下文（HTML 正文、属性、JavaScript、URL）在输出时编码，"
+        "而不是在输入时做净化。Thymeleaf 中优先使用 `th:text` 而非 `th:utext`；"
+        "确实需要渲染富文本时，让内容先经过一个配置好白名单的净化器。"
     ),
     "CWE-89": (
-        "Use a parameterised query so the value never reaches the SQL parser as "
-        "syntax: a `PreparedStatement` placeholder, a JPA named parameter, or "
-        "MyBatis `#{}`. MyBatis `${}` performs textual substitution and is not a "
-        "parameter. Where an identifier such as a column or sort direction must "
-        "vary, map the request value through a server-side allowlist rather than "
-        "concatenating it."
+        "使用参数化查询，让取值永远不会作为语法进入 SQL 解析器：`PreparedStatement` 占位符、"
+        "JPA 具名参数，或 MyBatis 的 `#{}`。MyBatis 的 `${}` 是文本替换，不是参数。"
+        "当列名、排序方向这类标识符必须可变时，把请求值经服务端白名单映射后再使用，而不是直接拼接。"
     ),
     "CWE-90": (
-        "Escape LDAP distinguished names and filters with the framework's own "
-        "encoder — Spring LDAP's `LdapEncoder`, or `javax.naming` filter "
-        "arguments — rather than concatenating request values into a filter "
-        "string."
+        "使用框架自带的编码器转义 LDAP 的 DN 与过滤器 —— Spring LDAP 的 `LdapEncoder`，"
+        "或 `javax.naming` 的过滤器参数 —— 而不是把请求值拼进过滤器字符串。"
     ),
     "CWE-91": (
-        "Build XML with a document API rather than string concatenation, so "
-        "request values become text nodes instead of markup."
+        "用文档 API 构造 XML，而不是字符串拼接，这样请求值会成为文本节点而不是标记。"
     ),
     "CWE-94": (
-        "Remove the dynamic evaluation. Where behaviour must vary at runtime, "
-        "dispatch through a fixed map of server-side implementations keyed by a "
-        "validated identifier instead of evaluating a supplied expression or "
-        "script."
+        "移除动态求值。若行为确实需要在运行期变化，改为通过一张固定的服务端实现映射表分发，"
+        "由校验过的标识符作为键，而不是去执行外部传入的表达式或脚本。"
     ),
     "CWE-200": (
-        "Return only the fields the caller is entitled to. Project the response "
-        "through an explicit DTO rather than serialising the persistence entity, "
-        "and scope every read query by the authenticated principal's tenant, "
-        "organisation or owner."
+        "只返回调用方有权获得的字段。响应经由显式的 DTO 投影，而不是直接序列化持久化实体；"
+        "并让每一条读取查询都按当前认证主体的租户、组织或属主收敛范围。"
     ),
     "CWE-209": (
-        "Return an opaque error to the caller and keep the stack trace, SQL "
-        "text and internal identifiers in the server log. Set an explicit error "
-        "handler so the framework's default whitelabel or debug page cannot "
-        "reach a production response."
+        "对调用方返回不透明的错误信息，把堆栈、SQL 文本和内部标识符留在服务端日志里。"
+        "显式配置错误处理器，确保框架默认的 whitelabel 或调试页面不会出现在生产响应中。"
     ),
     "CWE-284": (
-        "Enforce the access decision on the server for every entry point, not "
-        "only on the ones the UI links to. Prefer a deny-by-default filter chain "
-        "with explicit allow rules over per-handler annotations, so a newly "
-        "added endpoint is protected before anyone remembers to annotate it."
+        "在服务端对每一个入口执行访问决策，而不只是对 UI 会链接到的那些。"
+        "优先采用默认拒绝的过滤器链加显式放行规则，而不是逐个方法加注解 —— "
+        "这样新增的端点在有人想起来加注解之前就已经受保护。"
     ),
     "CWE-285": (
-        "Check that the authenticated principal is entitled to the specific "
-        "object, not merely authenticated. Push the ownership predicate into the "
-        "query — filter by tenant or owner in the `WHERE` clause — so a missing "
-        "check cannot return another principal's row."
+        "校验当前认证主体是否有权访问这个具体对象，而不只是「已登录」。"
+        "把归属条件下推到查询里（在 `WHERE` 中按租户或属主过滤），"
+        "这样漏掉一次判断也不会返回别的主体的数据行。"
     ),
     "CWE-287": (
-        "Route the credential check through the framework's authentication "
-        "provider rather than comparing values in a handler, so lockout, "
-        "credential encoding and session fixation protection all apply. Ensure "
-        "the session identifier is regenerated on successful login."
+        "把凭据校验交给框架的 authentication provider，而不是在处理器里直接比较取值，"
+        "这样锁定策略、凭据编码和会话固定防护才会一并生效。"
+        "同时确保登录成功后会重新生成会话标识。"
     ),
     "CWE-306": (
-        "Add the endpoint to the authenticated section of the security "
-        "configuration. Where an endpoint must stay anonymous, state that "
-        "intent explicitly in the filter chain rather than leaving it "
-        "unmatched, so the exemption is visible in review."
+        "把该端点纳入安全配置中需要认证的部分。若某个端点确实必须匿名访问，"
+        "就在过滤器链中显式声明这一意图，而不是让它处于未被任何规则匹配的状态，"
+        "使这条例外在评审时可见。"
     ),
     "CWE-327": (
-        "Replace the algorithm with a current one: AES-GCM for symmetric "
-        "encryption, SHA-256 or better for digests, and a memory-hard function "
-        "(bcrypt, scrypt, Argon2) for passwords. Never reuse an IV or nonce with "
-        "one key."
+        "替换为当前推荐的算法：对称加密用 AES-GCM，摘要用 SHA-256 或更强，"
+        "口令用内存困难型函数（bcrypt、scrypt、Argon2）。同一个密钥下绝不重用 IV 或 nonce。"
     ),
     "CWE-328": (
-        "Stop using this digest for a security decision. Use SHA-256 or better "
-        "for integrity, and a memory-hard password hash (bcrypt, scrypt, "
-        "Argon2) with a per-credential salt for passwords."
+        "不要再用这个摘要算法做安全决策。完整性校验改用 SHA-256 或更强；"
+        "口令改用带每凭据独立盐的内存困难型哈希（bcrypt、scrypt、Argon2）。"
     ),
     "CWE-330": (
-        "Use `java.security.SecureRandom` for any value an attacker must not be "
-        "able to predict — tokens, session identifiers, password resets, nonces. "
-        "`java.util.Random` and `Math.random()` are reproducible from observed "
-        "output."
+        "任何不允许被攻击者预测的取值 —— 令牌、会话标识、口令重置码、nonce —— "
+        "都必须用 `java.security.SecureRandom` 生成。`java.util.Random` 和 `Math.random()` "
+        "可以由已观测到的输出反推复现。"
     ),
     "CWE-352": (
-        "Leave CSRF protection enabled for cookie-authenticated, state-changing "
-        "requests. Where the endpoint is genuinely stateless and "
-        "token-authenticated from a non-browser client, record that in the "
-        "security configuration as a narrow exemption rather than disabling the "
-        "protection globally."
+        "对使用 Cookie 认证的写操作请求保持 CSRF 防护开启。"
+        "若该端点确实是无状态、由非浏览器客户端以令牌认证访问，"
+        "就在安全配置中把它记为一条范围明确的例外，而不是全局关闭防护。"
     ),
     "CWE-362": (
-        "Make the check and the state change atomic. Push the invariant into the "
-        "database — a conditional `UPDATE ... WHERE`, a unique constraint, or a "
-        "`SELECT ... FOR UPDATE` inside the transaction — rather than relying on "
-        "a read followed by a write. A `@Transactional` boundary alone does not "
-        "serialise concurrent callers at the default isolation level."
+        "让检查与状态变更成为一个原子操作。把不变量下推到数据库 —— 带条件的 "
+        "`UPDATE ... WHERE`、唯一约束，或事务内的 `SELECT ... FOR UPDATE` —— "
+        "而不是依赖「先读后写」。仅有 `@Transactional` 边界在默认隔离级别下并不会串行化并发调用方。"
     ),
     "CWE-400": (
-        "Bound the work a single request can cause: cap page size, request body "
-        "size, and result-set size, and set explicit timeouts on outbound calls "
-        "and queries so one caller cannot hold resources indefinitely."
+        "限定单个请求所能引发的工作量：限制分页大小、请求体大小和结果集规模，"
+        "并为外部调用和数据库查询设置明确超时，使单个调用方无法长期占用资源。"
     ),
     "CWE-434": (
-        "Validate the upload by content rather than by the client-supplied name "
-        "or content type, store it outside the web root under a generated name, "
-        "and never serve it from a path that any handler can execute or "
-        "interpret."
+        "按内容而不是按客户端提供的文件名或 Content-Type 校验上传文件，"
+        "以生成的名称存放在 Web 根目录之外，"
+        "并且绝不从任何处理器会执行或解释的路径上对外提供该文件。"
     ),
     "CWE-502": (
-        "Do not deserialise attacker-controlled bytes into arbitrary types. Use "
-        "a data format with no type resolution (plain JSON to a fixed DTO), and "
-        "if a polymorphic mapper is unavoidable, restrict it to an explicit "
-        "allowlist of permitted classes rather than a package prefix."
+        "不要把攻击者可控的字节反序列化成任意类型。使用不做类型解析的数据格式"
+        "（普通 JSON 反序列化到固定 DTO）；若确实无法避免多态映射器，"
+        "则将其限制到一份显式的许可类清单，而不是一个包名前缀。"
     ),
     "CWE-522": (
-        "Remove the credential from the code and configuration that ships with "
-        "the build, load it from the deployment's secret store at runtime, and "
-        "rotate the exposed value — a credential in version control must be "
-        "treated as disclosed regardless of repository visibility."
+        "把凭据从随构建发布的代码与配置中移除，运行时从部署环境的密钥存储加载，"
+        "并轮换已暴露的取值 —— 进入过版本库的凭据无论仓库是否公开都应视为已泄露。"
     ),
     "CWE-601": (
-        "Do not redirect to a location taken from the request. Redirect to a "
-        "server-side path selected by a validated key, or match the supplied "
-        "target against an allowlist of absolute URLs before use."
+        "不要跳转到来自请求的地址。改为按经过校验的键选择服务端路径进行跳转，"
+        "或在使用前用绝对 URL 白名单匹配请求提供的目标。"
     ),
     "CWE-611": (
-        "Disable external entity and DTD processing on the parser factory "
-        "before use: set `disallow-doctype-decl` to true, and "
-        "`external-general-entities` and `external-parameter-entities` to false. "
-        "Every factory instance needs this — the defaults are unsafe, and a "
-        "hardened factory in one class does not protect another."
+        "在使用解析器工厂之前禁用外部实体与 DTD 处理：把 `disallow-doctype-decl` 设为 true，"
+        "把 `external-general-entities` 和 `external-parameter-entities` 设为 false。"
+        "每一个工厂实例都需要这样设置 —— 默认值是不安全的，"
+        "在某个类里加固过的工厂并不能保护另一个类。"
     ),
     "CWE-639": (
-        "Scope the lookup by the authenticated principal instead of trusting the "
-        "identifier in the request. Filtering by owner in the query is what makes "
-        "the check unforgettable; a separate ownership assertion after the read "
-        "can be skipped on a later code path."
+        "按当前认证主体收敛查询范围，而不是信任请求里的标识符。"
+        "在查询中按属主过滤才能让这道检查无法被遗忘；"
+        "读取之后再单独断言归属，在后续新增的代码路径上很容易被跳过。"
     ),
     "CWE-798": (
-        "Remove the hardcoded credential, load it from the deployment's secret "
-        "store, and rotate the exposed value. Add the pattern to the secret scan "
-        "so a reintroduction fails the build rather than waiting for the next "
-        "audit."
+        "移除硬编码凭据，改为从部署环境的密钥存储加载，并轮换已暴露的取值。"
+        "把该模式加入密钥扫描规则，使得再次引入会直接让构建失败，而不是等到下一轮审计。"
     ),
     "CWE-829": (
-        "Resolve dependencies only from the configured internal mirror, pin "
-        "versions and verify checksums or signatures, so the build cannot pick "
-        "up a substituted artifact."
+        "只从配置好的内部镜像源解析依赖，固定版本并校验 checksum 或签名，"
+        "使构建无法取到被替换过的制品。"
     ),
     "CWE-863": (
-        "Correct the authorization predicate rather than adding a second check "
-        "beside it. Verify what the rule covers in the framework's own terms — "
-        "which paths a matcher actually matches, whether the proxy applies the "
-        "annotation on this call path — and cover the corrected rule with a test "
-        "that fails without it."
+        "修正授权判定本身，而不是在旁边再加一道检查。"
+        "用框架自身的语义去确认这条规则实际覆盖了什么 —— 某个 matcher 真正匹配哪些路径、"
+        "代理在这条调用路径上是否会应用该注解 —— 并为修正后的规则补一个「去掉修复就会失败」的测试。"
     ),
     "CWE-915": (
-        "Bind request bodies to an explicit DTO holding only the fields a caller "
-        "may set, and map to the persistence entity server-side. Binding "
-        "directly to an entity lets a caller set any writable field it declares."
+        "把请求体绑定到只包含调用方允许设置的字段的显式 DTO，再在服务端映射到持久化实体。"
+        "直接绑定到实体意味着调用方可以设置它声明的任何可写字段。"
     ),
     "CWE-917": (
-        "Do not evaluate an expression built from request input. Where "
-        "SpEL or OGNL evaluation is required, parse with a restricted evaluation "
-        "context that exposes no type references, and supply the user value as a "
-        "variable rather than as expression text."
+        "不要对由请求输入构造的表达式求值。若确实需要 SpEL 或 OGNL 求值，"
+        "使用不暴露任何类型引用的受限求值上下文进行解析，"
+        "并把用户取值作为变量传入，而不是作为表达式文本。"
     ),
     "CWE-918": (
-        "Do not fetch a URL taken from the request. Where an outbound call must "
-        "vary, resolve the target through a server-side allowlist of hosts, "
-        "re-validate after DNS resolution to reject link-local, loopback and "
-        "cloud-metadata addresses, and disable redirect following so a permitted "
-        "host cannot forward the request elsewhere."
+        "不要请求来自请求参数的 URL。若外发调用的目标确实必须可变，"
+        "通过服务端主机白名单解析目标，在 DNS 解析之后再次校验以拒绝链路本地地址、"
+        "回环地址和云元数据地址，并关闭重定向跟随，"
+        "使一个被允许的主机无法把请求转发到别处。"
     ),
     "CWE-1104": (
-        "Upgrade the component to a supported release, or replace it. Record the "
-        "decision and the next review date where a fixed version does not yet "
-        "exist, so the exposure stays visible instead of ageing silently."
+        "将该组件升级到仍在维护的版本，或替换掉它。"
+        "在尚无修复版本时，记录处置决定与下次复查时间，让这项暴露保持可见而不是悄悄老化。"
     ),
 }
 
@@ -286,18 +244,62 @@ REMEDIATION_BY_CATEGORY: dict[str, str] = {
 }
 
 GENERIC_REMEDIATION = (
-    "Cairn has no specific remediation on file for this weakness class. Treat "
-    "the call chain and controllability statement on this Finding as the "
-    "starting point: break the path from the external input to the sink, and "
-    "cover the fix with a test that fails without it. A reviewer should replace "
-    "this text with the concrete change once the fix is decided."
+    "Cairn 对该弱点类别没有内置的修复建议。请以本 Finding 上的调用链与可控性说明为起点："
+    "切断从外部输入到 Sink 的这条路径，并补一个「去掉修复就会失败」的测试。"
+    "修复方案确定后，评审人应当用具体的变更说明替换本段文字。"
 )
+
+# Audit category slug -> Chinese display label.
+#
+# The stored `category` stays an ASCII slug: it keys probe selection
+# (`cairn.dynamic.probes.PROBEABLE_CATEGORIES`), scope-key derivation and the
+# policy's category filter, so translating the stored value would silently
+# disable those. This table is display only, and covers what the platform
+# itself emits — the semantic planner's closed vocabulary
+# (`cairn.orchestrator.semantic_tasks.SINK_CATEGORIES` plus the two non-sink
+# categories) and the slugs the scanner normalizers assign. Anything else is a
+# scanner's own vocabulary and falls back to the humanised slug.
+CATEGORY_LABELS: dict[str, str] = {
+    "authorization": "越权访问",
+    "command-execution": "命令执行",
+    "command-injection": "命令注入",
+    "config": "安全配置缺陷",
+    "container-config": "容器配置缺陷",
+    "deserialization": "不安全反序列化",
+    "expression-injection": "表达式注入",
+    "external-control-of-file-name": "文件名可被外部控制",
+    "kubernetes": "Kubernetes 配置缺陷",
+    "path-traversal": "路径穿越",
+    "secret": "凭据泄露",
+    "security": "安全弱点",
+    "spring-config": "Spring 配置缺陷",
+    "spring-security-misconfiguration": "Spring Security 配置缺陷",
+    "sql-injection": "SQL 注入",
+    "ssrf": "服务端请求伪造（SSRF）",
+    "template-injection": "模板注入",
+    "terraform": "Terraform 配置缺陷",
+    "unsafe-deserialization": "不安全反序列化",
+    "vulnerability": "已知组件漏洞",
+    "xxe": "XML 外部实体注入（XXE）",
+}
 
 
 def owasp_for(cwe_id: str) -> str | None:
     """The OWASP Top 10 2021 category for a CWE, or ``None`` when unmapped."""
 
     return OWASP_BY_CWE.get(cwe_id.strip().upper())
+
+
+def category_label(category: str, fallback: str) -> str:
+    """The Chinese display label for a category slug.
+
+    ``fallback`` is what the caller renders when the slug is not one the
+    platform emits — a scanner's own vocabulary, which has no translation the
+    platform can stand behind. Returning the humanised slug there is honest;
+    guessing a Chinese name for it would not be.
+    """
+
+    return CATEGORY_LABELS.get(category.strip().lower(), fallback)
 
 
 def remediation_for(cwe_id: str, category: str) -> str:

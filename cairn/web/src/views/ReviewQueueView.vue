@@ -11,7 +11,7 @@ import StatePanel from "@/components/StatePanel.vue";
 import StatusBadge from "@/components/StatusBadge.vue";
 import { useAuthStore } from "@/stores/auth";
 import type { Finding, FindingDetail, FindingSeverity, ReverifyMethod, ReviewVerdict } from "@/types/api";
-import { errorMessage, formatDate } from "@/utils";
+import { categoryLabel, errorMessage, formatDate } from "@/utils";
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -104,7 +104,7 @@ onMounted(load);
   <StatePanel v-else-if="error" kind="error" :message="error" retryable @retry="load" />
   <StatePanel v-else-if="!items.length" kind="empty" title="复核队列已清空" message="当前没有等待人工处置的严重或高危漏洞。" />
   <div v-else class="table-wrap"><table class="data-table review-table"><thead><tr><th style="width:40%">漏洞</th><th style="width:13%">严重性</th><th style="width:19%">机器状态</th><th>进入队列</th><th style="width:88px"></th></tr></thead><tbody>
-    <tr v-for="finding in items" :key="finding.id"><td><RouterLink class="row-link cell-main" :to="`/findings/${finding.id}`">{{ finding.title }}</RouterLink><span class="cell-sub">{{ finding.cwe_id }} · {{ finding.category }}</span></td><td><SeverityBadge :value="finding.severity" /></td><td><StatusBadge :value="finding.status" /></td><td class="muted nowrap">{{ formatDate(finding.updated_at) }}</td><td><button class="button button--small" type="button" @click="openReview(finding)"><CheckCircle2 :size="14" />处置</button></td></tr>
+    <tr v-for="finding in items" :key="finding.id"><td><RouterLink class="row-link cell-main" :to="`/findings/${finding.id}`">{{ finding.title }}</RouterLink><span class="cell-sub">{{ finding.cwe_id }} · {{ categoryLabel(finding.category) }}</span></td><td><SeverityBadge :value="finding.severity" /></td><td><StatusBadge :value="finding.status" /></td><td class="muted nowrap">{{ formatDate(finding.updated_at) }}</td><td><button class="button button--small" type="button" @click="openReview(finding)"><CheckCircle2 :size="14" />处置</button></td></tr>
   </tbody></table></div>
 
   <ModalDialog :open="dialogOpen" title="人工处置" width="large" @close="dialogOpen = false">

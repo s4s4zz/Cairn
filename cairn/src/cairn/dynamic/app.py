@@ -88,7 +88,7 @@ def wait_for_services(
         if not host or not port.isdigit():
             raise EnvironmentError_(
                 REASON_SERVICE_UNAVAILABLE,
-                f"dependency service {name} has no usable endpoint",
+                f"依赖服务 {name} 没有可用的连接地址",
             )
         while True:
             if _accepts(host, int(port)):
@@ -97,7 +97,7 @@ def wait_for_services(
             if time.monotonic() >= deadline:
                 raise EnvironmentError_(
                     REASON_SERVICE_UNAVAILABLE,
-                    f"dependency service {name} did not accept a connection in time",
+                    f"依赖服务 {name} 在超时时间内没有接受连接",
                 )
             sleep(0.5)
     return ready
@@ -172,7 +172,7 @@ def start_application(
     if not jar_path.is_file() or jar_path.is_symlink():
         raise EnvironmentError_(
             REASON_BUILD_ARTIFACT_MISSING,
-            "the build output does not contain the runnable artifact",
+            "构建产物中不存在可运行的制品",
         )
 
     log_path = output_root / "runtime" / "application.log"
@@ -208,7 +208,7 @@ def start_application(
     except OSError as exc:
         raise EnvironmentError_(
             REASON_APP_START_FAILED,
-            f"the application could not be started: {exc}",
+            f"应用未能启动：{exc}",
         ) from exc
 
     base_url = f"http://127.0.0.1:{port}"
@@ -218,7 +218,7 @@ def start_application(
             REASON_APP_NOT_READY
             if process.poll() is None
             else REASON_APP_START_FAILED,
-            "the application did not become ready before the deadline",
+            "应用在超时时间内没有进入就绪状态",
         )
     return RunningApp(process=process, base_url=base_url, log_path=log_path)
 

@@ -73,8 +73,7 @@ class PocExecutor:
             return _inconclusive(
                 plan,
                 REASON_NO_ECHO,
-                "The plan asks for an out-of-band confirmation but no echo "
-                "service was available in this environment.",
+                "该 PoC 要求带外回连确认，但本次环境中没有可用的 echo 服务。",
             )
 
         nonce = f"cairn-{secrets.token_hex(16)}" if CALLBACK_TOKEN in plan.injection.payload else None
@@ -90,7 +89,7 @@ class PocExecutor:
             return _inconclusive(
                 plan,
                 REASON_REQUEST_FAILED,
-                f"The attack request did not complete: {payload_exchange.error}",
+                f"攻击请求未能完成：{payload_exchange.error}",
                 baseline=baseline_exchange,
                 payload=payload_exchange,
                 nonce=nonce,
@@ -111,8 +110,7 @@ class PocExecutor:
             return _inconclusive(
                 plan,
                 REASON_NOT_DISCRIMINATING,
-                "The success criterion matched the control request as well as "
-                "the attack, so it distinguishes nothing and is not evidence.",
+                "成功判据在对照请求上同样命中，因此它区分不出任何东西，不构成证据。",
                 baseline=baseline_exchange,
                 payload=payload_exchange,
                 nonce=nonce,
@@ -134,9 +132,8 @@ class PocExecutor:
             category=plan.category,
             verdict="rejected",
             detail=(
-                "The authored proof of concept ran and its success criterion "
-                "did not match; the payload produced no effect the plan "
-                "predicted."
+                "模型编写的 PoC 已执行，但其成功判据未命中；"
+                "载荷没有产生该 PoC 所预期的效果。"
             ),
             baseline=baseline_exchange,
             payload=payload_exchange,
@@ -170,7 +167,7 @@ class PocExecutor:
             token = "{" + name + "}"
             if token not in path:
                 raise _Unresolved(
-                    f"the path does not contain the variable {token}"
+                    f"请求路径中不存在路径变量 {token}"
                 )
             path = path.replace(token, urllib.parse.quote(resolved, safe=""))
         elif location == "query":
@@ -296,12 +293,12 @@ def _with_body_field(body: str | None, name: str, value: str) -> str:
     try:
         document: Any = json.loads(body) if body else {}
     except (TypeError, ValueError) as exc:
-        raise _Unresolved("the request body is not JSON, so it has no fields") from exc
+        raise _Unresolved("请求体不是 JSON，因此不存在可注入的字段") from exc
     if not isinstance(document, dict):
-        raise _Unresolved("the request body is not a JSON object")
+        raise _Unresolved("请求体不是 JSON 对象")
     parts = [part for part in name.split(".") if part]
     if not parts:
-        raise _Unresolved("the injection names no body field")
+        raise _Unresolved("注入点没有指明请求体字段")
     cursor = document
     for part in parts[:-1]:
         nested = cursor.get(part)
@@ -316,14 +313,12 @@ def _with_body_field(body: str | None, name: str, value: str) -> str:
 def _confirmed_detail(plan: PocPlan, echo_observed: bool) -> str:
     if echo_observed:
         return (
-            "The application performed the out-of-band callback the payload "
-            "planted: the platform's nonce arrived at the isolated echo "
-            "service, and the control request produced no such callback."
+            "应用执行了载荷所植入的带外回连：平台的 nonce 抵达了隔离的 echo 服务，"
+            "而对照请求没有产生任何回连。"
         )
     return (
-        f"The authored proof of concept succeeded: its {plan.criterion.kind} "
-        "criterion matched the attack request and not the control request, "
-        "which differed only in the injected value."
+        f"模型编写的 PoC 成功：其 {plan.criterion.kind} 判据在攻击请求上命中、"
+        "在对照请求上未命中，而两次请求仅在注入取值处不同。"
     )
 
 

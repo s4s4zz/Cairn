@@ -282,13 +282,15 @@ def poc_output_schema() -> dict[str, object]:
                         "type": "string",
                         "description": (
                             "The control value: what a legitimate request "
-                            "would carry here."
+                            "would carry here. Sent verbatim — never a Chinese "
+                            "description of the value."
                         ),
                     },
                     "payload": {
                         "type": "string",
                         "description": (
-                            "The attack value. Write "
+                            "The attack value, sent verbatim — never a Chinese "
+                            "description of it. Write "
                             f"{CALLBACK_TOKEN} where you want the platform's "
                             "out-of-band callback URL; it is generated and "
                             "checked by the platform, not by you."
@@ -311,7 +313,14 @@ def poc_output_schema() -> dict[str, object]:
                             "echo_nonce_observed",
                         ],
                     },
-                    "match_text": {"type": ["string", "null"]},
+                    "match_text": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Literal text compared against the attack response, "
+                            "byte for byte. It must be what the application "
+                            "actually emits — not a Chinese description of it."
+                        ),
+                    },
                     "status_code": {"type": ["integer", "null"]},
                     "elapsed_ms": {"type": ["integer", "null"]},
                 },
@@ -320,8 +329,8 @@ def poc_output_schema() -> dict[str, object]:
             "rationale": {
                 "type": "string",
                 "description": (
-                    "Why this request would demonstrate the weakness, and why "
-                    "the control value would not."
+                    "用简体中文说明：这个请求为何能证明该弱点，而对照值为何不会。"
+                    "其中的路径、参数名与载荷保留原文。"
                 ),
             },
         },

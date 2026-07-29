@@ -14,10 +14,19 @@ from uuid import uuid4
 
 import pytest
 
+from cairn.analysis.bytecode_sinks import _RULES as BYTECODE_SINK_RULES
+from cairn.analysis.config_rules import _RULES as CONFIG_RULES
 from cairn.analysis.contracts import ProgramIndexV2
+from cairn.orchestrator.semantic_tasks import (
+    CATEGORY_AUTHORIZATION,
+    CATEGORY_SPRING_SECURITY,
+    SINK_CATEGORIES,
+)
 from cairn.pipeline.catalogue import (
+    CATEGORY_LABELS,
     GENERIC_REMEDIATION,
     REMEDIATION_BY_CWE,
+    category_label,
     owasp_for,
     remediation_for,
 )
@@ -247,7 +256,38 @@ def test_a_complete_candidate_becomes_a_finding_command(archive: Path) -> None:
     assert command.severity.value == "high"
     assert command.confidence.value == "medium"
     assert command.remediation == REMEDIATION_BY_CWE["CWE-89"]
-    assert command.title == "SQL injection in OrderController.list"
+    assert command.title == "SQL 注入：OrderController.list"
+
+
+def test_the_description_frames_the_evidence_in_chinese(archive: Path) -> None:
+    """Every label the platform adds is Chinese; the candidate's own prose is not
+    touched, so a scanner's rule message stays traceable to the raw output."""
+
+    command = promote(
+        [
+            candidate(
+                existing_defenses=[
+                    {
+                        "mechanism": "OrderValidator.check",
+                        "effective": False,
+                        "reasoning": "只校验长度，不影响引号。",
+                    }
+                ],
+            )
+        ],
+        archive,
+    ).commands[0]
+
+    paragraphs = command.description.split("\n\n")
+    assert paragraphs[0] == "A request parameter reaches a concatenated SQL statement."
+    assert paragraphs[1].startswith("可控性：")
+    assert paragraphs[2] == (
+        f"调用链：OrderController.list（{SOURCE}:8）经 2 步"
+        f"到达 OrderController.list（{SOURCE}:12）。"
+    )
+    assert paragraphs[3].startswith("已有防护（未生效）：OrderValidator.check —— ")
+    assert paragraphs[4].startswith("建议验证方式：")
+    assert paragraphs[-1] == "发现来源：semgrep。"
 
 
 def test_v1_title_without_a_symbol_keeps_the_path_only(archive: Path) -> None:
@@ -269,7 +309,7 @@ def test_v1_title_without_a_symbol_keeps_the_path_only(archive: Path) -> None:
         archive,
     ).commands[0]
 
-    assert command.title == f"SQL injection in {SOURCE}"
+    assert command.title == f"SQL 注入：{SOURCE}"
 
 
 def test_locations_lead_with_the_call_chain_in_order(archive: Path) -> None:
@@ -313,9 +353,9 @@ def test_a_scanner_candidate_without_prose_gets_honest_placeholders(
         archive,
     ).commands[0]
 
-    assert "Not established" in command.attack_preconditions
+    assert "尚未确认" in command.attack_preconditions
     assert "semgrep" in command.attack_preconditions
-    assert "Not established" in command.impact
+    assert "尚未确认" in command.impact
 
 
 # --- bytecode evidence --------------------------------------------------------
@@ -650,12 +690,58 @@ def test_an_unmapped_cwe_falls_back_to_the_category_then_to_a_stated_gap() -> No
     assert remediation_for("CWE-9999", "not-a-category") == GENERIC_REMEDIATION
     # The generic text says there is no specific guidance rather than inventing
     # some, so a reader can tell advice from a gap.
-    assert "no specific remediation on file" in GENERIC_REMEDIATION
+    assert "没有内置的修复建议" in GENERIC_REMEDIATION
 
 
 def test_an_unmapped_cwe_yields_no_owasp_category_rather_than_a_guess() -> None:
     assert owasp_for("CWE-9999") is None
     assert owasp_for("cwe-918") == "A10:2021 Server-Side Request Forgery"
+
+
+def test_every_remediation_the_platform_stands_behind_is_written_in_chinese() -> None:
+    """A reviewer reading a Chinese workbench must not meet an English paragraph."""
+
+    for cwe_id, text in REMEDIATION_BY_CWE.items():
+        assert _has_cjk(text), cwe_id
+    assert _has_cjk(GENERIC_REMEDIATION)
+
+
+def test_every_category_the_platform_itself_assigns_has_a_chinese_label() -> None:
+    """Titles are built from these labels.
+
+    Derived from the tables rather than listed by hand: a new sink rule or
+    config rule that invents a category would otherwise fall back to its
+    English slug in the title and nobody would notice. That fallback is right
+    for a scanner's own vocabulary and wrong for ours.
+    """
+
+    ours = (
+        set(SINK_CATEGORIES.values())
+        | {CATEGORY_AUTHORIZATION, CATEGORY_SPRING_SECURITY}
+        | {rule.category for rule in BYTECODE_SINK_RULES}
+        | {rule[-1] for rule in CONFIG_RULES}
+    )
+
+    assert ours <= set(CATEGORY_LABELS)
+    assert all(_has_cjk(CATEGORY_LABELS[category]) for category in ours)
+
+
+def test_the_platforms_own_config_rule_messages_are_written_in_chinese() -> None:
+    """A third-party scanner's rule text passes through untranslated because it
+    is evidence; these messages are Cairn's own statement and are not."""
+
+    for rule in CONFIG_RULES:
+        assert _has_cjk(rule[3]), rule[2]
+
+
+def test_an_unknown_scanner_category_keeps_its_slug_rather_than_being_guessed() -> None:
+    assert category_label("prototype-pollution", "Prototype pollution") == (
+        "Prototype pollution"
+    )
+
+
+def _has_cjk(text: str) -> bool:
+    return any("一" <= character <= "鿿" for character in text)
 
 
 # --- snippet extraction -------------------------------------------------------

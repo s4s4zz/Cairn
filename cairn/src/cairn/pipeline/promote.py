@@ -37,7 +37,7 @@ from cairn.analysis.contracts import (
     CodeLocationV2,
     ProgramIndexV2,
 )
-from cairn.pipeline.catalogue import owasp_for, remediation_for
+from cairn.pipeline.catalogue import category_label, owasp_for, remediation_for
 from cairn.pipeline.snippets import FileText, SnippetUnavailable, read_files
 from cairn.server.domain.enums import (
     FindingConfidence,
@@ -81,14 +81,12 @@ _ACRONYMS = {
 }
 
 _UNKNOWN_PRECONDITIONS = (
-    "Not established. This candidate was produced by {tools} without an "
-    "attack-precondition statement, so reachability and the required "
-    "authentication state still have to be determined before acting on it."
+    "尚未确认。该候选由 {tools} 产出，未附带攻击前提说明，"
+    "因此在据此行动之前，仍需确认其可达性以及所需的认证状态。"
 )
 _UNKNOWN_IMPACT = (
-    "Not established. This candidate was produced by {tools} without an impact "
-    "statement; the consequence of successful exploitation has not been "
-    "assessed."
+    "尚未确认。该候选由 {tools} 产出，未附带影响说明；"
+    "成功利用后的后果尚未评估。"
 )
 
 
@@ -663,7 +661,8 @@ def _title(candidate: CandidateFinding) -> str:
         candidate.locations[0],
     )
     subject = primary.symbol or _title_subject(primary)
-    return f"{_humanize(candidate.category)} in {subject}"[:MAX_TITLE_CHARS]
+    label = category_label(candidate.category, _humanize(candidate.category))
+    return f"{label}：{subject}"[:MAX_TITLE_CHARS]
 
 
 def _title_subject(location: CandidateLocation | CodeLocationV2) -> str:
@@ -677,30 +676,37 @@ def _title_subject(location: CandidateLocation | CodeLocationV2) -> str:
 
 
 def _description(candidate: CandidateFinding, *, dropped_locations: int) -> str:
+    """Assemble the Finding narrative from the candidate's own evidence.
+
+    Every label the platform adds is Chinese, matching the rest of the
+    workbench. ``candidate.message`` is passed through untouched: for a
+    semantic candidate it is already Chinese, and for a scanner candidate it is
+    that tool's own rule message — evidence a reader can trace back to the raw
+    output, which a translation would no longer be.
+    """
+
     parts = [candidate.message]
     if candidate.controllability:
-        parts.append(f"Controllability: {candidate.controllability}")
+        parts.append(f"可控性：{candidate.controllability}")
     if candidate.call_chain:
         first, last = candidate.call_chain[0], candidate.call_chain[-1]
         parts.append(
-            f"Call chain: {_location_subject(first)} "
-            f"({_location_anchor(first)}) reaches {_location_subject(last)} "
-            f"({_location_anchor(last)}) in "
-            f"{len(candidate.call_chain)} steps."
+            f"调用链：{_location_subject(first)}"
+            f"（{_location_anchor(first)}）经 {len(candidate.call_chain)} 步"
+            f"到达 {_location_subject(last)}（{_location_anchor(last)}）。"
         )
     for defense in candidate.existing_defenses[:MAX_DEFENSE_NOTES]:
-        verdict = "holds" if defense.effective else "does not hold"
+        verdict = "有效" if defense.effective else "未生效"
         parts.append(
-            f"Existing defence ({verdict}): {defense.mechanism} — {defense.reasoning}"
+            f"已有防护（{verdict}）：{defense.mechanism} —— {defense.reasoning}"
         )
     if candidate.recommended_verification:
-        parts.append(f"Recommended verification: {candidate.recommended_verification}")
+        parts.append(f"建议验证方式：{candidate.recommended_verification}")
     if dropped_locations:
         parts.append(
-            f"{dropped_locations} further location(s) were recorded on the "
-            "candidate but omitted here; this list is not exhaustive."
+            f"另有 {dropped_locations} 处位置记录在候选上但未列入此处，本列表并不完整。"
         )
-    parts.append(f"Discovered by: {', '.join(candidate.discovered_by)}.")
+    parts.append(f"发现来源：{', '.join(candidate.discovered_by)}。")
     return "\n\n".join(parts)
 
 
@@ -744,9 +750,17 @@ def _discovered_by(candidate: CandidateFinding) -> str:
 
 
 def _humanize(category: str) -> str:
+    """Render a category slug readably, for slugs Cairn has no label for.
+
+    Only reached when a scanner emitted a category outside the platform's own
+    vocabulary (:data:`cairn.pipeline.catalogue.CATEGORY_LABELS`). Leaving that
+    slug in its original English is the honest outcome: the platform has no
+    Chinese name for it that it could stand behind.
+    """
+
     words = [word for word in str(category).replace("_", "-").split("-") if word]
     if not words:
-        return "Security weakness"
+        return "安全弱点"
     rendered = [_ACRONYMS.get(words[0].lower(), words[0].capitalize())]
     rendered.extend(_ACRONYMS.get(word.lower(), word.lower()) for word in words[1:])
     return " ".join(rendered)

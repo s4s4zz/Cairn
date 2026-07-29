@@ -170,15 +170,19 @@ class ReportService:
         self.session.flush()
 
         document, summary = self._document(audit_run, next_version)
+        # `ensure_ascii=False`: the Finding prose is Chinese, and escaping it to
+        # \uXXXX would leave the JSON and SARIF deliverables unreadable to the
+        # reviewer who opens them. Both are written as UTF-8 and declared as
+        # such; `sort_keys` still makes the output byte-stable for one document.
         json_bytes = json.dumps(
             document,
-            ensure_ascii=True,
+            ensure_ascii=False,
             indent=2,
             sort_keys=True,
         ).encode("utf-8")
         sarif_bytes = json.dumps(
             self._sarif(audit_run),
-            ensure_ascii=True,
+            ensure_ascii=False,
             indent=2,
             sort_keys=True,
         ).encode("utf-8")
@@ -758,7 +762,7 @@ class ReportService:
                     + snippet
                     + "</li>"
                 )
-            locations = "".join(location_items) or "<li>No code location</li>"
+            locations = "".join(location_items) or "<li>无代码定位</li>"
             evidence = "".join(
                 "<li><strong>"
                 + escape(item.type)
@@ -771,7 +775,7 @@ class ReportService:
                 )
                 + "</li>"
                 for item in finding.evidence
-            ) or "<li>None recorded</li>"
+            ) or "<li>未记录</li>"
             verifications = "".join(
                 "<li><strong>"
                 + escape(item.method)
@@ -783,7 +787,7 @@ class ReportService:
                 + escape(item.reasoning)
                 + "</li>"
                 for item in finding.verifications
-            ) or "<li>None recorded</li>"
+            ) or "<li>未记录</li>"
             reviews = "".join(
                 "<li>"
                 + escape(review.verdict)
@@ -793,41 +797,41 @@ class ReportService:
                 + escape(review.comment)
                 + "</li>"
                 for review in finding.human_reviews
-            ) or "<li>Not required</li>"
+            ) or "<li>无需人工复核</li>"
             finding_sections.append(
                 "<section class=\"finding\">"
                 f"<h2>{escape(finding.title)}</h2>"
                 f"<p><strong>{escape(finding.severity.upper())}</strong> "
                 f"{escape(finding.cwe_id)} &middot; {escape(finding.status)} &middot; "
-                f"confidence {escape(finding.confidence)} &middot; runtime "
+                f"置信度 {escape(finding.confidence)} &middot; 运行期验证 "
                 f"{escape(finding.runtime_verification)}</p>"
                 f"<p>{escape(finding.description)}</p>"
-                f"<h3>Attack preconditions</h3>"
+                f"<h3>攻击前提</h3>"
                 f"<p>{escape(finding.attack_preconditions)}</p>"
-                f"<h3>Impact</h3><p>{escape(finding.impact)}</p>"
-                f"<h3>Call chain and locations</h3><ol>{locations}</ol>"
-                f"<h3>Evidence</h3><ul>{evidence}</ul>"
-                f"<h3>Machine verification</h3><ul>{verifications}</ul>"
-                f"<h3>Remediation</h3><p>{escape(finding.remediation)}</p>"
-                f"<h3>Human review</h3><ul>{reviews}</ul>"
+                f"<h3>影响</h3><p>{escape(finding.impact)}</p>"
+                f"<h3>调用链与代码定位</h3><ol>{locations}</ol>"
+                f"<h3>证据</h3><ul>{evidence}</ul>"
+                f"<h3>机器验证</h3><ul>{verifications}</ul>"
+                f"<h3>修复建议</h3><p>{escape(finding.remediation)}</p>"
+                f"<h3>人工复核</h3><ul>{reviews}</ul>"
                 "</section>"
             )
         warnings = "".join(
-            f"<li>{escape(json.dumps(item, ensure_ascii=True, sort_keys=True))}</li>"
+            f"<li>{escape(json.dumps(item, ensure_ascii=False, sort_keys=True))}</li>"
             for item in coverage.coverage_warnings
-        ) or "<li>None</li>"
+        ) or "<li>无</li>"
         skipped_paths = "".join(
             f"<li><code>{escape(path)}</code></li>" for path in coverage.skipped_paths
-        ) or "<li>None</li>"
+        ) or "<li>无</li>"
         unsupported_components = "".join(
-            f"<li>{escape(json.dumps(item, ensure_ascii=True, sort_keys=True))}</li>"
+            f"<li>{escape(json.dumps(item, ensure_ascii=False, sort_keys=True))}</li>"
             for item in coverage.unsupported_components
-        ) or "<li>None</li>"
+        ) or "<li>无</li>"
         static_tools = "".join(
             f"<li><strong>{escape(tool)}</strong>: "
-            f"{escape(json.dumps(result, ensure_ascii=True, sort_keys=True))}</li>"
+            f"{escape(json.dumps(result, ensure_ascii=False, sort_keys=True))}</li>"
             for tool, result in sorted(coverage.static_tools_completed.items())
-        ) or "<li>None</li>"
+        ) or "<li>无</li>"
         counts = summary["severity_counts"]
         assert isinstance(counts, dict)
         count_cells = "".join(
@@ -835,14 +839,14 @@ class ReportService:
             for key, value in counts.items()
         )
         return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="zh-CN"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>Cairn audit report</title>
+<title>Cairn 代码审计报告</title>
 <style>body{{font:14px system-ui,sans-serif;max-width:1100px;margin:32px auto;padding:0 20px;color:#202124}}h1,h2,h3{{letter-spacing:0}}table{{border-collapse:collapse;width:100%}}td{{border:1px solid #ccc;padding:10px}}.finding{{border-top:2px solid #444;padding:18px 0}}code,pre{{white-space:pre-wrap;overflow-wrap:anywhere}}pre{{padding:10px;background:#f4f6f5;border:1px solid #ddd}}</style>
-</head><body><header><h1>Cairn Java Audit Report</h1>
-<p>Run <code>{escape(str(audit_run.id))}</code> &middot; Overall risk: <strong>{escape(str(summary['overall_risk']))}</strong></p></header>
+</head><body><header><h1>Cairn Java 代码审计报告</h1>
+<p>审计任务 <code>{escape(str(audit_run.id))}</code> &middot; 整体风险：<strong>{escape(str(summary['overall_risk']))}</strong></p></header>
 <table><tr>{count_cells}</tr></table>
-<section><h2>Coverage</h2><p>Build: {escape(coverage.build_status)}. Java files: {coverage.java_files_analyzed}/{coverage.java_files_total}. Entrypoints: {coverage.entrypoints_analyzed}/{coverage.entrypoints_total}. Sensitive sinks: {coverage.sensitive_sinks_analyzed}/{coverage.sensitive_sinks_total}.</p><h3>Static tools</h3><ul>{static_tools}</ul><h3>Warnings</h3><ul>{warnings}</ul><h3>Skipped paths</h3><ul>{skipped_paths}</ul><h3>Unsupported components</h3><ul>{unsupported_components}</ul></section>
+<section><h2>覆盖度</h2><p>构建：{escape(coverage.build_status)}。Java 文件：{coverage.java_files_analyzed}/{coverage.java_files_total}。入口：{coverage.entrypoints_analyzed}/{coverage.entrypoints_total}。敏感 Sink：{coverage.sensitive_sinks_analyzed}/{coverage.sensitive_sinks_total}。</p><h3>静态工具</h3><ul>{static_tools}</ul><h3>警告</h3><ul>{warnings}</ul><h3>跳过的路径</h3><ul>{skipped_paths}</ul><h3>不支持的组件</h3><ul>{unsupported_components}</ul></section>
 {''.join(finding_sections)}</body></html>"""
 
     def _store_report_artifact(

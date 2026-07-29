@@ -304,8 +304,11 @@ def test_the_operator_channel_carries_only_assignment_metadata(
         assert "sql-injection" in text
         assert "CWE-89" in text
         assert "deliberately withheld" in text
-        # Everything the reporting worker would have written about *why*.
-        for absent in ("Controllability:", "Impact:", "Call chain:", "Existing defence"):
+        # Everything the reporting worker would have written about *why*. The
+        # labels are the ones `cairn.pipeline.promote._description` renders, so
+        # this stays a real guard rather than one that passes because the
+        # wording moved.
+        for absent in ("可控性：", "影响：", "调用链：", "已有防护", "建议验证方式："):
             assert absent not in text
 
 

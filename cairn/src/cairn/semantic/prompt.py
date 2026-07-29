@@ -98,6 +98,22 @@ defect outside your scope, note it in one sentence and move on rather than
 opening a second investigation. Do not refactor, do not propose patches beyond
 `recommended_verification`, and do not attempt to fix anything.
 
+## Output language
+
+Write every prose field in Simplified Chinese (简体中文): `message`,
+`controllability`, each `existing_defenses[].reasoning`,
+`attack_preconditions`, `impact`, `recommended_verification`, and each
+`call_chain[].note`. These fields are read by Chinese-speaking security
+reviewers, so English prose in them is a defect regardless of how accurate it
+is.
+
+Leave technical identity verbatim, in the form the code and the index give it:
+file paths, `symbol`, class and method names, `rule_id`, `category`, CWE
+identifiers, annotation and API names, configuration keys, and any code or
+payload you quote. A Chinese sentence containing
+`OrderMapper.selectByExample` is correct; translating that identifier into
+Chinese is not.
+
 ## Output
 
 Return the structured object you were given a schema for, and an empty
@@ -163,6 +179,8 @@ def initial_user_message(scope: ReviewScope) -> str:
             " externally controlled value through the call graph, and stop at the"
             " sinks that matter for the assigned category.",
             "",
-            "Report your candidates in the required structured form.",
+            "Report your candidates in the required structured form, with"
+            " every prose field written in Simplified Chinese and every"
+            " identifier left verbatim.",
         ]
     )

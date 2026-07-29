@@ -213,7 +213,10 @@ def verify_output_schema() -> dict[str, object]:
             },
             "note": {
                 "type": ["string", "null"],
-                "description": "How tainted data moves through this step.",
+                "description": (
+                    "污点数据如何流经这一步。用简体中文描述，其中的类名、方法名"
+                    "与代码原样保留。"
+                ),
             },
         },
         "required": ["path", "start_line", "end_line", "symbol", "role", "note"],
@@ -234,32 +237,31 @@ def verify_output_schema() -> dict[str, object]:
             "reasoning": {
                 "type": "string",
                 "description": (
-                    "What you read and what it establishes. Cite files and "
-                    "lines."
+                    "你读了什么、由此确立了什么。用简体中文书写，并以原文形式"
+                    "标注文件与行号。"
                 ),
             },
             "reachability": {
                 "type": "string",
                 "description": (
-                    "How external input reaches the reported location, or why "
-                    "it cannot."
+                    "外部输入如何抵达所报告的位置，或为何无法抵达。用简体中文"
+                    "书写。"
                 ),
             },
             "call_chain": {
                 "type": "array",
                 "description": (
-                    "The entrypoint-to-sink chain you traced yourself. Required "
-                    "for 'confirmed'; a confirmation without at least two steps "
-                    "is downgraded to 'inconclusive'."
+                    "你自己重建的入口到 Sink 调用链。`confirmed` 必须提供；"
+                    "不足两步的确认会被降级为 `inconclusive`。"
                 ),
                 "items": step_schema,
             },
             "defeating_control": {
                 "type": ["string", "null"],
                 "description": (
-                    "The specific control that stops the attack, with file and "
-                    "line. Required for 'rejected'; a rejection without one is "
-                    "downgraded to 'inconclusive'."
+                    "真正阻断攻击的那处控制，用简体中文说明并给出文件与行号。"
+                    "`rejected` 必须提供；未指明控制的驳回会被降级为"
+                    " `inconclusive`。"
                 ),
             },
         },

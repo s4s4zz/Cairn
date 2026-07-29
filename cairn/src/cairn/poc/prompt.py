@@ -98,18 +98,32 @@ nothing. But do not invent a criterion that would pass regardless: an honest
 inconclusive is worth more than a confirmation the platform will see through and
 discard.
 
+## Output language
+
+Write `rationale` in Simplified Chinese (简体中文). It is read by a Chinese
+security reviewer, so English prose there is a defect however sound the plan is.
+
+Everything that goes on the wire stays exactly as you intend it to be sent, in
+its original form: `path`, header names and values, `injection.name`,
+`injection.benign`, `injection.payload`, and `criterion.match_text`. Those are
+literals the platform transmits and compares byte for byte — translating one
+into Chinese, or "improving" it, breaks the probe. `match_text` in particular
+must be the text the application will actually emit, not a Chinese description
+of it.
+
 ## Output
 
 Return the structured plan you were given a schema for: the request, the
-injection, the criterion, and a rationale explaining why the attack value would
-demonstrate the weakness and the control value would not.
+injection, the criterion, and a rationale — in Chinese — explaining why the
+attack value would demonstrate the weakness and the control value would not.
 """
 
 FINAL_ANSWER_REQUEST = (
     "Write the proof of concept now. Return the structured plan: one request"
     " template, one injection point with a control and an attack value, and the"
     " single criterion whose match on the attack — but not the control —"
-    " demonstrates the weakness."
+    " demonstrates the weakness. Write the rationale in Simplified Chinese and"
+    " leave every transmitted value exactly as it must be sent."
 )
 
 
@@ -189,6 +203,8 @@ def initial_user_message() -> str:
             " which single value carries the attack, and write one request"
             " template around it.",
             "",
-            "Return the proof of concept in the required structured form.",
+            "Return the proof of concept in the required structured form,"
+            " with the rationale in Simplified Chinese and every transmitted"
+            " value left verbatim.",
         ]
     )

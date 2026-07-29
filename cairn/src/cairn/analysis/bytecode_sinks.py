@@ -39,7 +39,7 @@ _RULES = (
         "CWE-89",
         "sql-injection",
         "high",
-        "JDBC SQL execution",
+        "JDBC SQL 执行",
     ),
     _SinkRule(
         "jvm-bytecode-command-execution",
@@ -48,7 +48,7 @@ _RULES = (
         "CWE-78",
         "command-injection",
         "critical",
-        "process execution",
+        "进程执行",
     ),
     _SinkRule(
         "jvm-bytecode-object-deserialization",
@@ -57,7 +57,7 @@ _RULES = (
         "CWE-502",
         "unsafe-deserialization",
         "high",
-        "Java object deserialization",
+        "Java 对象反序列化",
     ),
     _SinkRule(
         "jvm-bytecode-outbound-http",
@@ -71,7 +71,7 @@ _RULES = (
         "CWE-918",
         "ssrf",
         "high",
-        "outbound HTTP request",
+        "外发 HTTP 请求",
     ),
     _SinkRule(
         "jvm-bytecode-file-write",
@@ -80,7 +80,7 @@ _RULES = (
         "CWE-73",
         "external-control-of-file-name",
         "medium",
-        "filesystem mutation",
+        "文件系统写入",
     ),
 )
 
@@ -131,9 +131,8 @@ def bytecode_sink_candidates(
                 severity=rule.severity,
                 confidence="low",
                 message=(
-                    f"Bytecode contains a call to {target}, a "
-                    f"{rule.sink_family} API. Reachability and attacker "
-                    "control have not been established."
+                    f"字节码中存在对 {target} 的调用，属于「{rule.sink_family}」类 "
+                    "API。该调用的可达性与攻击者可控性尚未确认。"
                 ),
                 locations=[location],
                 sink=target,
@@ -142,15 +141,13 @@ def bytecode_sink_candidates(
                 discovered_by=[TOOL_NAME],
                 source_rules=[rule.rule_id],
                 attack_preconditions=(
-                    "Not established from the symbolic bytecode call alone."
+                    "仅凭这一处符号化的字节码调用无法确认攻击前提。"
                 ),
                 impact=(
-                    "Potential impact depends on whether untrusted data reaches "
-                    "this API and on the runtime arguments."
+                    "潜在影响取决于是否有不可信数据抵达该 API，以及运行时的实际参数。"
                 ),
                 recommended_verification=(
-                    "Trace callers and arguments from an externally reachable "
-                    "entrypoint before treating this candidate as exploitable."
+                    "在把该候选视为可利用之前，先从外部可达的入口回溯调用方与参数。"
                 ),
             )
         )

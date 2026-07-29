@@ -20,6 +20,7 @@ from cairn.poc.contracts import (
     PocResult,
     poc_output_schema,
 )
+from cairn.poc.prompt import POC_AUTHOR_SYSTEM_PROMPT
 
 
 def plan_payload(**overrides: object) -> dict[str, object]:
@@ -241,3 +242,27 @@ def test_the_output_schema_gives_the_model_no_field_to_supply_a_nonce() -> None:
     # The token is described so the model knows how to request a callback; the
     # value it resolves to is the platform's.
     assert CALLBACK_TOKEN in json.dumps(schema)
+
+
+def test_only_the_rationale_is_asked_for_in_chinese() -> None:
+    """`rationale` is prose a reviewer reads; the injection values and the match
+    text go on the wire and are compared byte for byte. Asking for Chinese
+    everywhere would translate a payload and break the probe, so the schema has
+    to draw the line, and both sides of it are stated rather than left implied.
+    """
+
+    schema = poc_output_schema()
+    injection = schema["properties"]["injection"]["properties"]
+    criterion = schema["properties"]["criterion"]["properties"]
+
+    assert "中文" in schema["properties"]["rationale"]["description"]
+    for field in (injection["benign"], injection["payload"], criterion["match_text"]):
+        assert "verbatim" in field["description"] or "actually emits" in field[
+            "description"
+        ]
+        assert "中文" not in field["description"]
+
+    assert "Simplified Chinese" in POC_AUTHOR_SYSTEM_PROMPT
+    assert "`rationale`" in POC_AUTHOR_SYSTEM_PROMPT
+    for name in ("`injection.payload`", "`criterion.match_text`"):
+        assert name in POC_AUTHOR_SYSTEM_PROMPT, name

@@ -10,7 +10,7 @@ import StatePanel from "@/components/StatePanel.vue";
 import StatusBadge from "@/components/StatusBadge.vue";
 import { useAuthStore } from "@/stores/auth";
 import type { FindingDetail, FindingLocation } from "@/types/api";
-import { errorMessage, formatDate } from "@/utils";
+import { errorMessage, formatDate, categoryLabel, confidenceLabel, evidenceTypeLabel, locationRoleLabel, verificationMethodLabel } from "@/utils";
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -142,12 +142,12 @@ onMounted(load);
   <template v-else>
     <RouterLink class="back-link" :to="{ path: '/findings', query: { audit_run_id: finding.audit_run_id } }"><ArrowLeft :size="15" />返回漏洞列表</RouterLink>
     <header class="finding-header">
-      <div><div class="finding-title"><SeverityBadge :value="finding.severity" /><h1>{{ finding.title }}</h1></div><p>{{ finding.cwe_id }} · {{ finding.category }}<template v-if="finding.owasp_category"> · {{ finding.owasp_category }}</template></p></div>
+      <div><div class="finding-title"><SeverityBadge :value="finding.severity" /><h1>{{ finding.title }}</h1></div><p>{{ finding.cwe_id }} · {{ categoryLabel(finding.category) }}<template v-if="finding.owasp_category"> · {{ finding.owasp_category }}</template></p></div>
       <div class="finding-header__status"><StatusBadge :value="finding.status" /><StatusBadge :value="finding.runtime_verification" /><RouterLink v-if="canReview" class="button" :to="{ path: '/review', query: { finding: finding.id } }"><ShieldCheck :size="15" />复核漏洞</RouterLink></div>
     </header>
 
     <dl class="detail-grid">
-      <div class="detail-item"><dt>置信度</dt><dd>{{ finding.confidence }}</dd></div>
+      <div class="detail-item"><dt>置信度</dt><dd>{{ confidenceLabel(finding.confidence) }}</dd></div>
       <div class="detail-item"><dt>发现来源</dt><dd>{{ finding.discovered_by }}</dd></div>
       <div class="detail-item"><dt>首次发现</dt><dd>{{ formatDate(finding.first_seen_at) }}</dd></div>
       <div class="detail-item"><dt>AuditRun</dt><dd><RouterLink class="row-link mono" :to="`/audit-runs/${finding.audit_run_id}`">{{ finding.audit_run_id }}</RouterLink></dd></div>
@@ -167,7 +167,7 @@ onMounted(load);
       <ol class="location-list">
         <li v-for="location in finding.locations.slice().sort((a,b) => a.ordinal - b.ordinal)" :key="location.id">
           <button type="button" :class="{ active: selectedLocation?.id === location.id }" @click="selectLocation(location)">
-            <span class="location-role"><GitMerge :size="13" />{{ location.role }}</span><strong>{{ locationName(location) }}</strong><small>{{ logicalPath(location) }}<template v-if="location.bytecode_offset !== null"> · offset {{ location.bytecode_offset }}</template><template v-else-if="location.start_line !== null">:{{ location.start_line }}</template></small>
+            <span class="location-role"><GitMerge :size="13" />{{ locationRoleLabel(location.role) }}</span><strong>{{ locationName(location) }}</strong><small>{{ logicalPath(location) }}<template v-if="location.bytecode_offset !== null"> · offset {{ location.bytecode_offset }}</template><template v-else-if="location.start_line !== null">:{{ location.start_line }}</template></small>
           </button>
         </li>
       </ol>
@@ -198,12 +198,12 @@ onMounted(load);
       <section class="panel">
         <header class="panel__header"><h2>证据</h2><span class="muted">{{ finding.evidence.length }}</span></header>
         <div v-if="!finding.evidence.length" class="empty-inline">暂无证据</div>
-        <ul v-else class="record-list"><li v-for="evidence in finding.evidence" :key="evidence.id"><div><strong>{{ evidence.type }}</strong><p>{{ evidence.summary }}</p><small>{{ formatDate(evidence.created_at) }}</small></div><a v-if="evidence.artifact_id" class="icon-button" :href="reportApi.artifactUrl(evidence.artifact_id)" target="_blank" title="查看 Artifact"><ExternalLink :size="15" /></a></li></ul>
+        <ul v-else class="record-list"><li v-for="evidence in finding.evidence" :key="evidence.id"><div><strong>{{ evidenceTypeLabel(evidence.type) }}</strong><p>{{ evidence.summary }}</p><small>{{ formatDate(evidence.created_at) }}</small></div><a v-if="evidence.artifact_id" class="icon-button" :href="reportApi.artifactUrl(evidence.artifact_id)" target="_blank" title="查看 Artifact"><ExternalLink :size="15" /></a></li></ul>
       </section>
       <section class="panel">
         <header class="panel__header"><h2>独立验证</h2><span class="muted">{{ finding.verifications.length }}</span></header>
         <div v-if="!finding.verifications.length" class="empty-inline">暂无独立验证</div>
-        <ul v-else class="record-list"><li v-for="verification in finding.verifications" :key="verification.id"><div><div class="record-heading"><strong>{{ verification.method }}</strong><StatusBadge :value="verification.verdict" /></div><p>{{ verification.reasoning }}</p><small>{{ verification.verifier }} · {{ formatDate(verification.created_at) }}</small></div></li></ul>
+        <ul v-else class="record-list"><li v-for="verification in finding.verifications" :key="verification.id"><div><div class="record-heading"><strong>{{ verificationMethodLabel(verification.method) }}</strong><StatusBadge :value="verification.verdict" /></div><p>{{ verification.reasoning }}</p><small>{{ verification.verifier }} · {{ formatDate(verification.created_at) }}</small></div></li></ul>
       </section>
     </div>
 

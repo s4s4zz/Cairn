@@ -226,7 +226,7 @@ def run(source: Path, scratch: Path, output: Path) -> DynamicResult:
                         category=target.category,
                         verdict="inconclusive",
                         reason_code=REASON_CATEGORY_UNSUPPORTED,
-                        detail=f"The probe raised before it could conclude: {exc}"[:4096],
+                        detail=f"探测在得出结论之前抛出异常：{exc}"[:4096],
                     )
                 )
         # Model-authored PoCs run against the same live application. The
@@ -243,7 +243,7 @@ def run(source: Path, scratch: Path, output: Path) -> DynamicResult:
                         category=poc_plan.category,
                         verdict="inconclusive",
                         reason_code=POC_PLAN_INVALID,
-                        detail=f"The PoC raised before it could conclude: {exc}"[:4096],
+                        detail=f"PoC 在得出结论之前抛出异常：{exc}"[:4096],
                     )
                 )
     finally:
