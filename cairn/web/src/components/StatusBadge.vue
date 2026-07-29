@@ -40,13 +40,16 @@ const labels: Record<string, string> = {
   queued: "排队中",
   claimed: "已领取",
   skipped: "已跳过",
+  inconclusive: "无法判定",
 };
 
 const tone = computed(() => {
   if (["completed", "ready", "confirmed", "success", "succeeded", "verified", "active"].includes(props.value)) return "success";
   if (["failed", "rejected", "down"].includes(props.value)) return "danger";
-  if (["completed_with_warnings", "partial", "accepted_risk", "awaiting_human_review", "degraded"].includes(props.value)) return "warning";
-  if (["cancelled", "skipped", "expired", "not_applicable", "inactive", "unknown"].includes(props.value)) return "neutral";
+  // `skipped` is a coverage gap, not a neutral outcome: it must not read with
+  // the same weight as a stage that simply has not started yet.
+  if (["completed_with_warnings", "partial", "skipped", "accepted_risk", "awaiting_human_review", "inconclusive", "degraded"].includes(props.value)) return "warning";
+  if (["cancelled", "expired", "not_applicable", "inactive", "unknown"].includes(props.value)) return "neutral";
   return "info";
 });
 </script>

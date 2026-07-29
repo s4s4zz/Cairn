@@ -167,6 +167,15 @@ export interface AuditTask {
   created_at: string;
 }
 
+export interface ToolCoverageRecord {
+  status?: string;
+  version?: string | null;
+  task_id?: string;
+  artifact_ids?: string[];
+  reason_code?: string | null;
+  candidate_count?: number;
+}
+
 export interface AuditCoverage {
   audit_run_id: string;
   modules_total: number;
@@ -178,7 +187,7 @@ export interface AuditCoverage {
   sensitive_sinks_total: number;
   sensitive_sinks_analyzed: number;
   build_status: "success" | "partial" | "failed";
-  static_tools_completed: Record<string, unknown>;
+  static_tools_completed: Record<string, ToolCoverageRecord>;
   skipped_paths: string[];
   unsupported_components: Array<Record<string, unknown>>;
   coverage_warnings: Array<{ code?: string; message?: string; scope?: string } & Record<string, unknown>>;

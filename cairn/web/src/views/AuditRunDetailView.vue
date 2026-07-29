@@ -5,7 +5,6 @@ import {
   Ban,
   Download,
   FileText,
-  Radio,
   RefreshCw,
   Trash2,
 } from "@lucide/vue";
@@ -13,10 +12,18 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { auditRunApi, reportApi } from "@/api/resources";
+import GapList from "@/components/GapList.vue";
+import ProcessBar from "@/components/ProcessBar.vue";
+import RunEventLog from "@/components/RunEventLog.vue";
+import RunNarrative from "@/components/RunNarrative.vue";
+import RunWaterfall from "@/components/RunWaterfall.vue";
 import StageTimeline from "@/components/StageTimeline.vue";
 import StatePanel from "@/components/StatePanel.vue";
 import StatusBadge from "@/components/StatusBadge.vue";
 import { useAuditRunEvents } from "@/composables/useAuditRunEvents";
+import { useRunNarrative } from "@/composables/useRunNarrative";
+import { buildStatusDisplay, collectGaps, coverageMetrics } from "@/coverage";
+import { STAGES } from "@/stages";
 import { useAuthStore } from "@/stores/auth";
 import type { AuditCoverage, AuditRun, AuditRunEventSnapshot, AuditTask, Report } from "@/types/api";
 import { duration, errorMessage, formatDate, progressValue, shortId } from "@/utils";
@@ -27,16 +34,22 @@ const auth = useAuthStore();
 const id = String(route.params.id);
 const run = ref<AuditRun | null>(null);
 const tasks = ref<AuditTask[]>([]);
+const taskPageTotal = ref(0);
+const taskPageLimit = ref(0);
 const coverage = ref<AuditCoverage | null>(null);
-const warnings = ref<Array<{ code?: string; message: string }>>([]);
 const taskCounts = ref<Record<string, number>>({});
+const findingCounts = ref<Record<string, number>>({});
+const coverageWarningCount = ref(0);
 const report = ref<Report | null>(null);
 const loading = ref(true);
 const error = ref("");
 const acting = ref(false);
+const gapsSection = ref<HTMLElement | null>(null);
 let pollTimer: number | null = null;
 let taskRefreshPromise: Promise<void> | null = null;
 let taskRefreshRequested = false;
+
+const { events, record: recordSnapshot } = useRunNarrative();
 
 const canManage = computed(() => auth.can(["admin", "auditor"]));
 const canDelete = computed(() =>
@@ -55,12 +68,28 @@ const canDelete = computed(() =>
 const canGenerate = computed(() => canManage.value && run.value?.status === "human_review");
 const isTerminal = computed(() => run.value ? ["completed", "completed_with_warnings", "cancelled", "failed"].includes(run.value.status) : false);
 const hasReport = computed(() => Boolean(report.value) || (run.value ? ["completed", "completed_with_warnings"].includes(run.value.status) : false));
-const coverageItems = computed(() => coverage.value ? [
-  { label: "模块", value: coverage.value.modules_analyzed, total: coverage.value.modules_total },
-  { label: "Java 文件", value: coverage.value.java_files_analyzed, total: coverage.value.java_files_total },
-  { label: "入口点", value: coverage.value.entrypoints_analyzed, total: coverage.value.entrypoints_total },
-  { label: "敏感 Sink", value: coverage.value.sensitive_sinks_analyzed, total: coverage.value.sensitive_sinks_total },
-] : []);
+
+// `task_counts` already groups every task of the run server-side, so it is the
+// authoritative total; the loaded list is only a page and is the fallback until
+// the first SSE snapshot arrives.
+const taskTotal = computed(() => {
+  const counted = Object.values(taskCounts.value).reduce((sum, count) => sum + count, 0);
+  return counted || tasks.value.length;
+});
+const tasksTruncated = computed(
+  () => taskPageLimit.value > 0 && taskPageTotal.value > tasks.value.length,
+);
+
+const toolCoverage = computed(() => coverage.value?.static_tools_completed ?? null);
+const metrics = computed(() =>
+  run.value && coverage.value ? coverageMetrics(run.value, coverage.value) : [],
+);
+const buildStatus = computed(() =>
+  run.value && coverage.value ? buildStatusDisplay(run.value, coverage.value) : null,
+);
+const gaps = computed(() =>
+  coverage.value ? collectGaps(coverage.value, tasks.value) : [],
+);
 
 function applyEvent(event: AuditRunEventSnapshot): void {
   if (run.value && event.audit_run_id === run.value.id) {
@@ -76,17 +105,17 @@ function applyEvent(event: AuditRunEventSnapshot): void {
     };
   }
   taskCounts.value = event.task_counts;
+  // The stream already carries what the run has found and how much of the
+  // repository it had to leave out; discarding either left the page unable to
+  // answer the two questions a reader actually has.
+  findingCounts.value = event.finding_counts ?? {};
+  coverageWarningCount.value = event.coverage_warning_count ?? 0;
+  recordSnapshot(event);
   void refreshTasks().catch((reason) => { error.value = errorMessage(reason); });
   if (["completed", "completed_with_warnings", "cancelled", "failed"].includes(event.status)) disconnectStream();
 }
 
 const { state: streamState, connect: connectStream, disconnect: disconnectStream } = useAuditRunEvents(id, applyEvent);
-
-function coverageWarning(item: Record<string, unknown>): { code?: string; message: string } {
-  const code = typeof item.code === "string" ? item.code : typeof item.reason_code === "string" ? item.reason_code : undefined;
-  const message = typeof item.message === "string" ? item.message : typeof item.detail === "string" ? item.detail : JSON.stringify(item);
-  return { code, message };
-}
 
 function refreshTasks(): Promise<void> {
   taskRefreshRequested = true;
@@ -96,6 +125,8 @@ function refreshTasks(): Promise<void> {
         taskRefreshRequested = false;
         const page = await auditRunApi.tasks(id);
         tasks.value = page.items;
+        taskPageTotal.value = page.meta.total;
+        taskPageLimit.value = page.meta.limit;
       }
     })().finally(() => { taskRefreshPromise = null; });
   }
@@ -119,7 +150,9 @@ async function load(options: { quiet?: boolean } = {}): Promise<void> {
     report.value = reportPage.items[0] ?? null;
     if (coverageResult.status === "fulfilled") {
       coverage.value = coverageResult.value;
-      warnings.value = coverageResult.value.coverage_warnings.map(coverageWarning);
+      if (!coverageWarningCount.value) {
+        coverageWarningCount.value = coverageResult.value.coverage_warnings.length;
+      }
     }
   } catch (reason) {
     error.value = errorMessage(reason);
@@ -179,7 +212,13 @@ async function generateReport(): Promise<void> {
   }
 }
 
-function ratio(value: number, total: number): number { return total ? Math.round((value / total) * 100) : 0; }
+function focusGaps(): void {
+  gapsSection.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function stageLabel(key: string): string {
+  return STAGES.find((stage) => stage.key === key)?.label ?? key;
+}
 
 onMounted(async () => {
   await load();
@@ -195,7 +234,16 @@ onBeforeUnmount(() => { if (pollTimer) window.clearInterval(pollTimer); });
   <template v-else-if="run">
     <RouterLink class="back-link" to="/audit-runs"><ArrowLeft :size="15" />返回审计任务</RouterLink>
     <header class="run-header">
-      <div><div class="run-title"><h1>审计 {{ shortId(run.id) }}</h1><StatusBadge :value="run.status" /></div><p class="mono">{{ run.id }}</p></div>
+      <div>
+        <div class="run-title"><h1>审计 {{ shortId(run.id) }}</h1><StatusBadge :value="run.status" /></div>
+        <p class="mono">{{ run.id }}</p>
+        <RunNarrative
+          :run="run"
+          :tasks="tasks"
+          :finding-counts="findingCounts"
+          :coverage-warnings="coverageWarningCount"
+        />
+      </div>
       <div class="run-actions">
         <RouterLink class="button button--secondary" :to="{ path: '/findings', query: { audit_run_id: run.id } }">查看漏洞</RouterLink>
         <button v-if="canGenerate" class="button" type="button" :disabled="acting" @click="generateReport"><FileText :size="15" />生成报告并完成</button>
@@ -210,43 +258,93 @@ onBeforeUnmount(() => { if (pollTimer) window.clearInterval(pollTimer); });
     <div v-if="report" class="notice notice--success report-ready"><FileText :size="17" /><strong>报告 v{{ report.version }}</strong><a :href="reportApi.downloadUrl(report.id, 'html')" target="_blank">HTML</a><a :href="reportApi.downloadUrl(report.id, 'json')">JSON</a><a :href="reportApi.downloadUrl(report.id, 'sarif')"><Download :size="13" />SARIF</a></div>
     <section v-if="run.failure_reason" class="notice notice--danger"><AlertTriangle :size="17" /><div><strong>{{ run.failure_code || "审计失败" }}</strong><br />{{ run.failure_reason }}</div></section>
 
+    <ProcessBar
+      :run="run"
+      :tasks="tasks"
+      :finding-counts="findingCounts"
+      :coverage-warnings="coverageWarningCount"
+      @focus-gaps="focusGaps"
+    />
+
     <dl class="detail-grid run-summary">
       <div class="detail-item"><dt>当前阶段</dt><dd><StatusBadge :value="run.current_stage || 'created'" /></dd></div>
       <div class="detail-item"><dt>总体进度</dt><dd class="progress-cell"><div class="progress-track"><span :style="{ width: `${progressValue(run.progress)}%` }" /></div>{{ progressValue(run.progress).toFixed(0) }}%</dd></div>
-      <div class="detail-item"><dt>SSE 状态</dt><dd class="stream-state"><Radio :size="13" />{{ { idle: '未连接', connecting: '连接中', connected: '实时连接', disconnected: '连接中断，轮询兜底' }[streamState] }}</dd></div>
       <div class="detail-item"><dt>策略版本</dt><dd>v{{ run.policy_version }}</dd></div>
       <div class="detail-item"><dt>运行时长</dt><dd>{{ duration(run.started_at, run.completed_at) }}</dd></div>
       <div class="detail-item"><dt>开始时间</dt><dd>{{ formatDate(run.started_at || run.created_at) }}</dd></div>
     </dl>
 
-    <div class="section-title"><h2>审计阶段</h2><p>{{ Object.values(taskCounts).reduce((sum, count) => sum + count, tasks.length) }} 个任务 · {{ run.warning_count }} 条警告</p></div>
-    <section class="panel"><StageTimeline :run="run" :tasks="tasks" /></section>
+    <div class="run-body">
+      <div class="run-main">
+        <RunWaterfall :run="run" :tasks="tasks" :tool-coverage="toolCoverage" />
 
-    <div class="section-title"><h2>Coverage</h2><p>构建、文件、入口与敏感调用覆盖情况</p></div>
-    <StatePanel v-if="!coverage" kind="empty" title="Coverage 尚未生成" message="覆盖检查阶段完成后将在此显示。" />
-    <template v-else>
-      <section class="coverage-grid">
-        <article v-for="item in coverageItems" :key="item.label"><div><span>{{ item.label }}</span><strong>{{ item.value }} / {{ item.total }}</strong></div><div class="progress-track"><span :style="{ width: `${ratio(item.value, item.total)}%` }" /></div><small>{{ ratio(item.value, item.total) }}%</small></article>
-      </section>
-      <div class="coverage-footer"><span>构建状态</span><StatusBadge :value="coverage.build_status" /><span>更新时间 {{ formatDate(coverage.updated_at) }}</span></div>
-      <section class="coverage-details">
-        <article><h3>静态工具</h3><ul><li v-for="(result, tool) in coverage.static_tools_completed" :key="tool"><span>{{ tool }}</span><code>{{ typeof result === 'object' ? JSON.stringify(result) : result }}</code></li><li v-if="!Object.keys(coverage.static_tools_completed).length">无记录</li></ul></article>
-        <article><h3>跳过路径</h3><ul><li v-for="path in coverage.skipped_paths" :key="path" class="mono">{{ path }}</li><li v-if="!coverage.skipped_paths.length">无</li></ul></article>
-        <article><h3>不支持组件</h3><ul><li v-for="(component, index) in coverage.unsupported_components" :key="index"><code>{{ JSON.stringify(component) }}</code></li><li v-if="!coverage.unsupported_components.length">无</li></ul></article>
-      </section>
-    </template>
+        <div class="section-title"><h2>审计阶段</h2><p>{{ taskTotal }} 个任务 · {{ run.warning_count }} 条警告</p></div>
+        <div v-if="tasksTruncated" class="notice notice--warning task-truncated">
+          <AlertTriangle :size="15" />
+          <span>本次运行共 {{ taskPageTotal }} 个任务，页面仅加载了前 {{ tasks.length }} 个，下方列表不完整。</span>
+        </div>
+        <section class="panel"><StageTimeline :run="run" :tasks="tasks" :tool-coverage="toolCoverage" /></section>
 
-    <div v-if="warnings.length" class="section-title"><h2>运行警告</h2><p>{{ warnings.length }} 条</p></div>
-    <section v-if="warnings.length" class="warning-list"><article v-for="(warning, index) in warnings" :key="`${warning.code}-${index}`"><AlertTriangle :size="16" /><div><strong>{{ warning.code || "COVERAGE_WARNING" }}</strong><p>{{ warning.message }}</p></div></article></section>
+        <div class="section-title">
+          <h2>覆盖与缺口</h2>
+          <p>左侧是已列出范围的完成度，不是召回率；右侧是本次运行明确没有覆盖的部分。</p>
+        </div>
+        <StatePanel
+          v-if="!coverage"
+          kind="empty"
+          title="Coverage 尚未生成"
+          message="项目盘点开始后将在此显示。"
+        />
+        <div v-else ref="gapsSection" class="coverage-contrast">
+          <article class="coverage-side">
+            <h3>已列出范围</h3>
+            <ul class="metric-list">
+              <li v-for="metric in metrics" :key="metric.key">
+                <div class="metric-head">
+                  <span>{{ metric.label }}</span>
+                  <strong v-if="metric.state === 'ready'">{{ metric.value }} / {{ metric.total }}</strong>
+                  <strong v-else class="metric-head__pending">
+                    待统计<em v-if="metric.total"> · 共 {{ metric.total }}</em>
+                  </strong>
+                </div>
+                <div class="progress-track">
+                  <span :style="{ width: `${metric.state === 'ready' ? metric.ratio : 0}%` }" />
+                </div>
+                <small v-if="metric.state === 'ready'">{{ metric.ratio }}%</small>
+                <small v-else class="muted">{{ stageLabel(metric.producedBy) }}完成后给出</small>
+              </li>
+            </ul>
+            <div class="build-row">
+              <span>构建状态</span>
+              <span class="badge" :class="`badge--${buildStatus?.tone}`">{{ buildStatus?.label }}</span>
+              <small v-if="!buildStatus?.known">该字段在构建阶段完成前不可用</small>
+            </div>
+            <p class="metric-note">
+              分母是平台已经识别出的入口与 Sink 数量，不是仓库中真实存在的总数。
+            </p>
+          </article>
+
+          <article class="coverage-side">
+            <h3>未审范围<em>{{ gaps.length }}</em></h3>
+            <GapList :gaps="gaps" />
+            <p v-if="coverage" class="metric-note">更新时间 {{ formatDate(coverage.updated_at) }}</p>
+          </article>
+        </div>
+      </div>
+
+      <aside class="run-aside">
+        <RunEventLog :events="events" :stream-state="streamState" />
+      </aside>
+    </div>
   </template>
 </template>
 
 <style scoped>
 .back-link { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 12px; color: var(--muted); font-size: 11px; text-decoration: none; }
-.run-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+.run-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
 .run-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .run-title h1 { margin: 0; font-size: 23px; }
-.run-header p { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.run-header p.mono { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
 .run-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .run-error { margin-bottom: 12px; }
 .report-ready { margin-bottom: 12px; }
@@ -254,25 +352,33 @@ onBeforeUnmount(() => { if (pollTimer) window.clearInterval(pollTimer); });
 .run-summary { margin-top: 14px; }
 .progress-cell { display: flex; align-items: center; gap: 8px; }
 .progress-cell .progress-track { max-width: 130px; }
-.stream-state { display: flex; align-items: center; gap: 6px; }
-.coverage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.coverage-grid article { display: grid; grid-template-columns: 1fr auto; gap: 9px 12px; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
-.coverage-grid article > div:first-child { display: flex; grid-column: 1 / -1; justify-content: space-between; gap: 8px; font-size: 11px; }
-.coverage-grid article strong { font-size: 12px; }
-.coverage-grid small { color: var(--muted); font-size: 9px; }
-.coverage-footer { display: flex; align-items: center; gap: 9px; margin-top: 9px; color: var(--muted); font-size: 10px; }
-.coverage-footer span:last-child { margin-left: auto; }
-.coverage-details { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px; margin-top: 10px; }
-.coverage-details article { min-width: 0; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
-.coverage-details h3 { margin: 0 0 8px; font-size: 10px; }
-.coverage-details ul { display: grid; gap: 6px; margin: 0; padding: 0; color: var(--muted); font-size: 9px; list-style: none; }
-.coverage-details li { min-width: 0; overflow-wrap: anywhere; }
-.coverage-details li span { margin-right: 6px; color: var(--text); }
-.coverage-details code { white-space: pre-wrap; overflow-wrap: anywhere; }
-.warning-list { display: grid; gap: 8px; }
-.warning-list article { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; color: var(--warning); background: var(--warning-soft); border: 1px solid #ead9a8; border-radius: 6px; }
-.warning-list strong { font-size: 10px; }
-.warning-list p { margin: 3px 0 0; color: #765b27; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-@media (max-width: 900px) { .coverage-grid { grid-template-columns: 1fr 1fr; } .coverage-details { grid-template-columns: 1fr; } }
-@media (max-width: 620px) { .run-header { display: grid; } .run-actions { justify-content: flex-start; } .run-actions .button { flex: 1; } .coverage-grid { grid-template-columns: 1fr; } .coverage-footer { align-items: flex-start; flex-wrap: wrap; } .coverage-footer span:last-child { width: 100%; margin-left: 0; } }
+
+.run-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; margin-top: 16px; }
+.run-main { display: grid; min-width: 0; gap: 0; }
+.run-aside { position: sticky; top: 14px; }
+.task-truncated { margin-bottom: 10px; }
+
+.coverage-contrast { display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.1fr); gap: 12px; align-items: start; }
+.coverage-side { min-width: 0; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.coverage-side > h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 12px; }
+.coverage-side > h3 em { color: var(--warning); font-size: 13px; font-style: normal; font-weight: 700; }
+.metric-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.metric-list li { display: grid; gap: 5px; }
+.metric-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; }
+.metric-head span { color: var(--muted); }
+.metric-head strong { color: var(--ink); font-size: 12px; }
+.metric-head__pending { color: var(--subtle); font-weight: 600; }
+.metric-head__pending em { font-style: normal; }
+.metric-list small { color: var(--muted); font-size: 10px; }
+.metric-list small.muted { color: var(--subtle); }
+.build-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+.build-row small { color: var(--subtle); font-size: 10px; }
+.metric-note { margin: 12px 0 0; color: var(--subtle); font-size: 10px; line-height: 1.6; }
+
+@media (max-width: 1180px) {
+  .run-body { grid-template-columns: 1fr; }
+  .run-aside { position: static; }
+}
+@media (max-width: 900px) { .coverage-contrast { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .run-header { display: grid; } .run-actions { justify-content: flex-start; } .run-actions .button { flex: 1; } }
 </style>

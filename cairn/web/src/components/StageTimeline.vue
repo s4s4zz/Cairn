@@ -4,198 +4,107 @@ import {
   Check,
   ChevronDown,
   Circle,
+  FileDown,
   LoaderCircle,
   Minus,
   RotateCcw,
 } from "@lucide/vue";
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 
+import { reportApi } from "@/api/resources";
 import StatusBadge from "@/components/StatusBadge.vue";
-import type { AuditRun, AuditTask } from "@/types/api";
-import { duration, formatDate } from "@/utils";
+import { buildRunClock, stageState, tasksForStage, type BarStatus } from "@/runClock";
+import { STAGES } from "@/stages";
+import {
+  compactDuration,
+  scopeMetadata,
+  taskErrorDescription,
+  taskScopeToken,
+  taskTitle,
+  timeoutLabel,
+} from "@/taskLabels";
+import type { AuditRun, AuditTask, ToolCoverageRecord } from "@/types/api";
+import { duration, formatDate, shortId } from "@/utils";
 
-const props = defineProps<{ run: AuditRun; tasks: AuditTask[] }>();
+const props = defineProps<{
+  run: AuditRun;
+  tasks: AuditTask[];
+  toolCoverage?: Record<string, ToolCoverageRecord> | null;
+}>();
 
-type StageState =
-  | "pending"
-  | "running"
-  | "succeeded"
-  | "partial"
-  | "failed"
-  | "skipped";
-
-const definitions = [
-  { key: "ingesting", label: "源码接入", tasks: [] },
-  { key: "preprocessing", label: "项目盘点", tasks: ["inventory"] },
-  { key: "building", label: "隔离构建", tasks: ["build"] },
-  {
-    key: "static_scanning",
-    label: "静态扫描",
-    tasks: ["sast", "dependency_scan", "secret_scan", "config_scan"],
-  },
-  {
-    key: "semantic_auditing",
-    label: "AI 语义审计",
-    tasks: ["semantic_review"],
-  },
-  {
-    key: "dynamic_verifying",
-    label: "动态验证",
-    tasks: ["dynamic_verify"],
-  },
-  {
-    key: "machine_review",
-    label: "机器复核",
-    tasks: ["independent_verify"],
-  },
-  { key: "human_review", label: "人工复核", tasks: [] },
-  {
-    key: "coverage_check",
-    label: "覆盖检查",
-    tasks: ["coverage_check"],
-  },
-  { key: "reporting", label: "生成报告", tasks: ["report"] },
-] as const;
-
-const currentIndex = computed(() =>
-  definitions.findIndex((stage) => stage.key === props.run.current_stage),
-);
-const terminalSuccess = computed(() =>
-  ["completed", "completed_with_warnings"].includes(props.run.status),
+const clock = computed(() =>
+  buildRunClock({
+    run: props.run,
+    tasks: props.tasks,
+    toolCoverage: props.toolCoverage,
+    nowMs: Date.now(),
+    formatDuration: compactDuration,
+  }),
 );
 
-const taskNames: Record<string, string> = {
-  inventory: "Java 项目盘点",
-  build: "隔离构建",
-  sast: "代码安全扫描",
-  dependency_scan: "依赖漏洞扫描",
-  secret_scan: "敏感信息扫描",
-  config_scan: "配置安全扫描",
-  semantic_review: "AI 语义分析",
-  dynamic_verify: "动态验证",
-  independent_verify: "独立机器复核",
-  coverage_check: "覆盖率检查",
-  report: "报告生成",
-};
+const stageBars = computed(() =>
+  new Map(clock.value.bars.filter((bar) => bar.kind === "stage").map((bar) => [bar.stageKey, bar])),
+);
 
-const scopeNames: Record<string, string> = {
-  inventory: "项目结构、模块、入口点与敏感调用盘点",
-  build: "编译源码并收集字节码与可运行制品",
-  codeql: "CodeQL 数据流扫描",
-  semgrep: "Semgrep Java 安全规则扫描",
-  findsecbugs: "FindSecBugs 字节码扫描",
-  "dependency-check": "OWASP Dependency-Check 依赖扫描",
-  trivy: "Trivy 依赖与配置扫描",
-  gitleaks: "Gitleaks 密钥泄漏扫描",
-  "config-rules": "Spring 与部署配置规则检查",
-};
-
-const categoryNames: Record<string, string> = {
-  authorization: "鉴权与越权",
-  "command-execution": "命令执行",
-  "sql-injection": "SQL 注入",
-  ssrf: "SSRF",
-  xxe: "XXE",
-};
-
-function stageTasks(taskTypes: readonly string[]): AuditTask[] {
-  return props.tasks.filter((task) => taskTypes.includes(task.type));
+function state(index: number): BarStatus {
+  return stageState(props.run, props.tasks, index);
 }
 
-function state(index: number, taskTypes: readonly string[]): StageState {
-  const related = stageTasks(taskTypes);
-  if (related.some((task) => ["running", "claimed"].includes(task.status))) {
-    return "running";
-  }
-  if (related.some((task) => task.status === "failed")) {
-    return related.some((task) =>
-      ["succeeded", "skipped"].includes(task.status),
-    )
-      ? "partial"
-      : "failed";
-  }
-  if (
-    related.length &&
-    related.every((task) =>
-      ["succeeded", "skipped", "cancelled"].includes(task.status),
-    )
-  ) {
-    return related.every((task) => task.status === "skipped")
-      ? "skipped"
-      : "succeeded";
-  }
-  if (terminalSuccess.value) return "succeeded";
-  if (
-    index === currentIndex.value &&
-    !["failed", "cancelled"].includes(props.run.status)
-  ) {
-    return "running";
-  }
-  if (currentIndex.value >= 0 && index < currentIndex.value) return "succeeded";
-  if (props.run.status === "failed" && index === currentIndex.value) {
-    return "failed";
-  }
-  return "pending";
+function stageTasks(index: number): AuditTask[] {
+  return tasksForStage(props.tasks, STAGES[index]);
 }
 
-function stateLabel(value: StageState): string {
-  return {
-    pending: "等待",
-    running: "执行中",
-    succeeded: "完成",
-    partial: "部分完成",
-    failed: "失败",
-    skipped: "已跳过",
-  }[value];
-}
-
-function workers(taskTypes: readonly string[]): string {
-  const names = [
-    ...new Set(
-      stageTasks(taskTypes)
-        .map((task) => task.worker_name)
-        .filter(Boolean),
-    ),
-  ];
-  return names.join(", ") || "-";
-}
-
-function attempts(taskTypes: readonly string[]): string {
-  const related = stageTasks(taskTypes);
-  if (!related.length) return "-";
-  const retries = related.reduce(
-    (sum, task) => sum + Math.max(0, task.attempt - 1),
-    0,
+function stateLabel(value: BarStatus): string {
+  return (
+    {
+      pending: "等待",
+      running: "执行中",
+      succeeded: "完成",
+      partial: "部分完成",
+      failed: "失败",
+      skipped: "已跳过",
+      cancelled: "已取消",
+    }[value] ?? value
   );
+}
+
+function elapsed(index: number): string {
+  const bar = stageBars.value.get(STAGES[index].key);
+  return bar?.durationMs === null || bar === undefined ? "-" : compactDuration(bar.durationMs);
+}
+
+function share(index: number): number | null {
+  return stageBars.value.get(STAGES[index].key)?.share ?? null;
+}
+
+function attempts(index: number): string {
+  const related = stageTasks(index);
+  if (!related.length) return "-";
+  const retries = related.reduce((sum, task) => sum + Math.max(0, task.attempt - 1), 0);
   return retries ? `${retries} 次` : "无";
 }
 
-function elapsed(taskTypes: readonly string[]): string {
-  const related = stageTasks(taskTypes);
-  const first =
-    related
-      .map((task) => task.started_at)
-      .filter((value): value is string => Boolean(value))
-      .sort()[0] ?? null;
-  const last =
-    related
-      .map((task) => task.finished_at)
-      .filter((value): value is string => Boolean(value))
-      .sort()
-      .at(-1) ?? null;
-  return duration(first, last);
+function toolRecord(task: AuditTask): ToolCoverageRecord | null {
+  const record = props.toolCoverage?.[taskScopeToken(task)];
+  return record && typeof record === "object" ? record : null;
 }
 
-function taskScopeToken(task: AuditTask): string {
-  return task.scope_key.split(":").at(-1) || task.type;
+function taskCandidates(task: AuditTask): number | null {
+  const value = toolRecord(task)?.candidate_count;
+  return typeof value === "number" ? value : null;
 }
 
-function taskTitle(task: AuditTask): string {
-  const token = taskScopeToken(task);
-  if (task.type === "semantic_review") {
-    return `${taskNames[task.type]}：${categoryNames[token] || token}`;
-  }
-  return scopeNames[token] || taskNames[task.type] || task.type;
+function toolVersion(task: AuditTask): string | null {
+  const value = toolRecord(task)?.version;
+  return typeof value === "string" && value ? value : null;
+}
+
+/** Candidates a stage produced, when its tools report one. */
+function stageCandidates(index: number): number | null {
+  const counts = stageTasks(index)
+    .map(taskCandidates)
+    .filter((value): value is number => value !== null);
+  return counts.length ? counts.reduce((sum, value) => sum + value, 0) : null;
 }
 
 function taskDescription(task: AuditTask): string {
@@ -206,17 +115,20 @@ function taskDescription(task: AuditTask): string {
       ? "模型正在按需读取相关源码并分析入口到 Sink 的调用链"
       : "沙箱正在执行该工具";
   }
-  if (task.status === "succeeded") return "任务成功完成并已收集结果";
+  if (task.status === "succeeded") {
+    const candidates = taskCandidates(task);
+    return candidates === null
+      ? "任务成功完成并已收集结果"
+      : `沙箱执行完成，产出 ${candidates} 个候选`;
+  }
   if (task.status === "skipped") return "前置条件不满足，任务已跳过";
   if (task.status === "cancelled") return "任务已取消";
   return "任务未完成，请查看下方错误码";
 }
 
-function stageSummary(taskTypes: readonly string[]): string {
-  const related = stageTasks(taskTypes);
-  const active = related.find((task) =>
-    ["running", "claimed"].includes(task.status),
-  );
+function stageSummary(index: number): string {
+  const related = stageTasks(index);
+  const active = related.find((task) => ["running", "claimed"].includes(task.status));
   if (active) return `正在执行：${taskTitle(active)}`;
   if (!related.length) return "该阶段没有后台子任务";
   const succeeded = related.filter((task) => task.status === "succeeded").length;
@@ -232,93 +144,98 @@ function stageSummary(taskTypes: readonly string[]): string {
     .join(" · ");
 }
 
-function scopeMetadata(task: AuditTask): string {
-  const values = [
-    typeof task.scope.module === "string" ? `模块 ${task.scope.module}` : "",
-    typeof task.scope.attack_surface === "string"
-      ? task.scope.attack_surface
-      : "",
-    typeof task.scope.category === "string"
-      ? categoryNames[task.scope.category] || task.scope.category
-      : "",
-  ].filter(Boolean);
-  return values.join(" · ");
+function needsAttention(index: number): boolean {
+  return ["running", "partial", "failed"].includes(state(index));
 }
 
-function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
-  return ["running", "partial", "failed"].includes(state(index, taskTypes));
+// A stage opens itself when it starts needing attention, but never closes
+// itself: binding `open` straight to the derived state folded the panel the
+// reader was using at the very moment its tasks finished.
+const openStages = ref<Record<string, boolean>>({});
+
+watch(
+  () => STAGES.map((_stage, index) => needsAttention(index)),
+  (next, previous) => {
+    next.forEach((attention, index) => {
+      if (attention && !previous?.[index]) {
+        openStages.value[STAGES[index].key] = true;
+      }
+    });
+  },
+  { immediate: true },
+);
+
+function isOpen(key: string): boolean {
+  return openStages.value[key] ?? false;
 }
+
+function rememberOpen(key: string, event: Event): void {
+  openStages.value[key] = (event.target as HTMLDetailsElement).open;
+}
+
+defineExpose({
+  open(key: string) {
+    openStages.value[key] = true;
+  },
+});
 </script>
 
 <template>
   <ol class="stage-list">
     <li
-      v-for="(stage, index) in definitions"
+      v-for="(stage, index) in STAGES"
       :key="stage.key"
       class="stage-group"
-      :class="`stage-group--${state(index, stage.tasks)}`"
+      :class="`stage-group--${state(index)}`"
+      :data-stage="stage.key"
     >
-      <details :open="opensByDefault(index, stage.tasks)">
+      <details :open="isOpen(stage.key)" @toggle="rememberOpen(stage.key, $event)">
         <summary class="stage-row">
           <span class="stage-marker">
-            <Check
-              v-if="state(index, stage.tasks) === 'succeeded'"
-              :size="14"
-            />
-            <LoaderCircle
-              v-else-if="state(index, stage.tasks) === 'running'"
-              class="spin"
-              :size="14"
-            />
+            <Check v-if="state(index) === 'succeeded'" :size="14" />
+            <LoaderCircle v-else-if="state(index) === 'running'" class="spin" :size="14" />
             <AlertTriangle
-              v-else-if="
-                ['failed', 'partial'].includes(state(index, stage.tasks))
-              "
+              v-else-if="['failed', 'partial', 'skipped'].includes(state(index))"
               :size="14"
             />
-            <Minus
-              v-else-if="state(index, stage.tasks) === 'skipped'"
-              :size="14"
-            />
+            <Minus v-else-if="state(index) === 'cancelled'" :size="14" />
             <Circle v-else :size="11" />
           </span>
           <span class="stage-name">
             <strong>{{ stage.label }}</strong>
-            <small>{{ stageSummary(stage.tasks) }}</small>
+            <small>{{ stageSummary(index) }}</small>
           </span>
-          <span class="stage-state">
-            {{ stateLabel(state(index, stage.tasks)) }}
-          </span>
-          <span class="stage-meta">
-            <small>Worker</small>
-            <strong :title="workers(stage.tasks)">
-              {{ workers(stage.tasks) }}
-            </strong>
+          <span class="stage-state">{{ stateLabel(state(index)) }}</span>
+          <span class="stage-meta stage-meta--share">
+            <small>耗时占比</small>
+            <span class="share">
+              <span class="share__track">
+                <span :style="{ width: `${(share(index) ?? 0) * 100}%` }" />
+              </span>
+              <strong>{{ share(index) === null ? "-" : `${Math.round(share(index)! * 100)}%` }}</strong>
+            </span>
           </span>
           <span class="stage-meta">
             <small>耗时</small>
-            <strong>{{ elapsed(stage.tasks) }}</strong>
+            <strong>{{ elapsed(index) }}</strong>
+          </span>
+          <span class="stage-meta">
+            <small>产出</small>
+            <strong>{{ stageCandidates(index) === null ? "-" : `${stageCandidates(index)} 候选` }}</strong>
           </span>
           <span class="stage-meta">
             <small>重试</small>
             <strong>
-              <RotateCcw
-                v-if="attempts(stage.tasks) !== '-'"
-                :size="11"
-              />
-              {{ attempts(stage.tasks) }}
+              <RotateCcw v-if="attempts(index) !== '-'" :size="11" />
+              {{ attempts(index) }}
             </strong>
           </span>
-          <ChevronDown
-            v-if="stageTasks(stage.tasks).length"
-            class="stage-chevron"
-            :size="16"
-          />
+          <ChevronDown v-if="stageTasks(index).length" class="stage-chevron" :size="16" />
         </summary>
 
-        <div v-if="stageTasks(stage.tasks).length" class="task-list">
+        <div v-if="stageTasks(index).length" class="task-list">
           <article
-            v-for="task in stageTasks(stage.tasks)"
+            v-for="task in stageTasks(index)"
             :key="task.id"
             class="task-row"
             :class="`task-row--${task.status}`"
@@ -327,12 +244,13 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
               <div class="task-heading">
                 <strong>{{ taskTitle(task) }}</strong>
                 <StatusBadge :value="task.status" />
+                <span v-if="task.worker_name?.includes(':')" class="task-role">
+                  {{ task.worker_name.split(":").at(-1) }}
+                </span>
               </div>
               <p>{{ taskDescription(task) }}</p>
               <code>{{ task.scope_key }}</code>
-              <small v-if="scopeMetadata(task)">
-                {{ scopeMetadata(task) }}
-              </small>
+              <small v-if="scopeMetadata(task)">{{ scopeMetadata(task) }}</small>
             </div>
             <dl class="task-facts">
               <div>
@@ -341,9 +259,7 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
               </div>
               <div>
                 <dt>Worker</dt>
-                <dd :title="task.worker_name || '-'">
-                  {{ task.worker_name || "-" }}
-                </dd>
+                <dd :title="task.worker_name || '-'">{{ task.worker_name || "-" }}</dd>
               </div>
               <div>
                 <dt>开始</dt>
@@ -353,15 +269,32 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
                 <dt>耗时</dt>
                 <dd>{{ duration(task.started_at, task.finished_at) }}</dd>
               </div>
+              <div>
+                <dt>超时上限</dt>
+                <dd>{{ timeoutLabel(task.timeout_seconds) }}</dd>
+              </div>
+              <div>
+                <dt>工具版本</dt>
+                <dd>{{ toolVersion(task) || "-" }}</dd>
+              </div>
             </dl>
-            <div
-              v-if="task.error_code || task.error_detail"
-              class="task-error"
-            >
+            <div v-if="task.output_artifact_ids?.length" class="task-artifacts">
+              <span>产物</span>
+              <a
+                v-for="artifactId in task.output_artifact_ids"
+                :key="artifactId"
+                :href="reportApi.artifactUrl(artifactId)"
+                target="_blank"
+                rel="noopener"
+              >
+                <FileDown :size="12" />{{ shortId(artifactId) }}
+              </a>
+            </div>
+            <div v-if="task.error_code || task.error_detail" class="task-error">
               <AlertTriangle :size="14" />
               <div>
                 <strong>{{ task.error_code || "TASK_FAILED" }}</strong>
-                <p v-if="task.error_detail">{{ task.error_detail }}</p>
+                <p>{{ taskErrorDescription(task) }}</p>
               </div>
             </div>
           </article>
@@ -390,8 +323,8 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
   display: grid;
   min-height: 72px;
   grid-template-columns:
-    28px minmax(220px, 1.5fr) 78px minmax(110px, 1fr)
-    74px 58px 18px;
+    28px minmax(190px, 1.4fr) 72px minmax(104px, 0.9fr)
+    72px 72px 56px 18px;
   align-items: center;
   gap: 10px;
   padding: 9px 14px;
@@ -416,19 +349,19 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
   background: var(--success-soft);
 }
 .stage-group--running .stage-marker {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--info);
+  background: var(--info-soft);
 }
 .stage-group--failed .stage-marker {
   color: var(--danger);
   background: var(--danger-soft);
 }
-.stage-group--partial .stage-marker {
+/* A skipped stage is a coverage gap, so it carries the same weight as a
+   partial one rather than the neutral grey of a stage that has not started. */
+.stage-group--partial .stage-marker,
+.stage-group--skipped .stage-marker {
   color: var(--warning);
   background: var(--warning-soft);
-}
-.stage-group--skipped .stage-marker {
-  color: #76817c;
 }
 .stage-name {
   display: grid;
@@ -442,22 +375,23 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
 .stage-name small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .stage-state {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 .stage-group--running .stage-state {
-  color: var(--accent);
+  color: var(--info);
 }
 .stage-group--failed .stage-state {
   color: var(--danger);
 }
-.stage-group--partial .stage-state {
+.stage-group--partial .stage-state,
+.stage-group--skipped .stage-state {
   color: var(--warning);
 }
 .stage-meta {
@@ -467,7 +401,7 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
 }
 .stage-meta small {
   color: var(--subtle);
-  font-size: 9px;
+  font-size: 10px;
 }
 .stage-meta strong {
   display: flex;
@@ -475,10 +409,32 @@ function opensByDefault(index: number, taskTypes: readonly string[]): boolean {
   gap: 4px;
   overflow: hidden;
   color: #53605a;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.share {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.share__track {
+  flex: 1;
+  height: 5px;
+  overflow: hidden;
+  background: #e8ecea;
+  border-radius: 3px;
+}
+.share__track > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.share strong {
+  color: #53605a;
+  font-size: 11px;
+  font-weight: 600;
 }
 .stage-chevron {
   color: var(--subtle);
@@ -494,7 +450,7 @@ details[open] .stage-chevron {
 }
 .task-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1.4fr) minmax(310px, 1fr);
+  grid-template-columns: minmax(240px, 1.3fr) minmax(320px, 1fr);
   gap: 12px 18px;
   padding: 12px 14px;
   background: var(--surface);
@@ -504,7 +460,7 @@ details[open] .stage-chevron {
 }
 .task-row--running,
 .task-row--claimed {
-  border-left-color: var(--accent);
+  border-left-color: var(--info);
 }
 .task-row--succeeded {
   border-left-color: var(--success);
@@ -529,28 +485,36 @@ details[open] .stage-chevron {
 }
 .task-heading strong {
   color: #303b36;
-  font-size: 11px;
+  font-size: 12px;
+}
+.task-role {
+  padding: 1px 6px;
+  color: var(--info);
+  font-size: 10px;
+  background: var(--info-soft);
+  border-radius: 4px;
 }
 .task-main p {
   margin: 0;
   color: var(--muted);
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.5;
 }
 .task-main code {
   overflow: hidden;
   color: #66736d;
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .task-main > small {
   color: var(--subtle);
-  font-size: 9px;
+  font-size: 10px;
 }
 .task-facts {
   display: grid;
-  grid-template-columns: 58px minmax(100px, 1fr) minmax(115px, 1fr) 70px;
+  grid-template-columns:
+    54px minmax(96px, 1fr) minmax(104px, 1fr) 66px 66px minmax(62px, 0.8fr);
   gap: 8px;
   margin: 0;
 }
@@ -560,16 +524,38 @@ details[open] .stage-chevron {
 .task-facts dt {
   margin-bottom: 4px;
   color: var(--subtle);
-  font-size: 8px;
+  font-size: 10px;
 }
 .task-facts dd {
   margin: 0;
   overflow: hidden;
   color: #53605a;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.task-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 6px 10px;
+}
+.task-artifacts span {
+  color: var(--subtle);
+  font-size: 10px;
+}
+.task-artifacts a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-size: 10px;
+  text-decoration: none;
+}
+.task-artifacts a:hover {
+  text-decoration: underline;
 }
 .task-error {
   display: flex;
@@ -582,21 +568,29 @@ details[open] .stage-chevron {
   border-radius: 5px;
 }
 .task-error strong {
-  font-size: 9px;
+  font-size: 10px;
 }
 .task-error p {
   margin: 3px 0 0;
   color: #7c3d3d;
-  font-size: 9px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
-@media (max-width: 960px) {
+@media (max-width: 1100px) {
   .stage-row {
-    grid-template-columns: 28px minmax(190px, 1fr) 75px 76px 18px;
+    grid-template-columns: 28px minmax(180px, 1fr) 72px 72px 72px 56px 18px;
   }
-  .stage-meta:nth-of-type(2),
-  .stage-meta:nth-of-type(3) {
+  .stage-meta--share {
+    display: none;
+  }
+}
+@media (max-width: 860px) {
+  .stage-row {
+    grid-template-columns: 28px minmax(160px, 1fr) 72px 72px 18px;
+  }
+  .stage-meta:nth-of-type(3),
+  .stage-meta:nth-of-type(4) {
     display: none;
   }
   .task-row {
@@ -605,7 +599,7 @@ details[open] .stage-chevron {
 }
 @media (max-width: 620px) {
   .stage-row {
-    grid-template-columns: 28px minmax(150px, 1fr) 70px 18px;
+    grid-template-columns: 28px minmax(140px, 1fr) 66px 18px;
   }
   .stage-meta {
     display: none;

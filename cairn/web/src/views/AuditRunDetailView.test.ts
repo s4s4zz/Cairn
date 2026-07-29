@@ -201,6 +201,121 @@ describe("AuditRunDetailView", () => {
     wrapper.unmount();
   });
 
+  it("counts run tasks from the SSE snapshot instead of adding the loaded page", async () => {
+    const wrapper = await renderView();
+
+    expect(wrapper.text()).toContain("1 个任务");
+
+    stream.callback?.({
+      audit_run_id: run.id,
+      status: "static_scanning",
+      current_stage: "static_scanning",
+      progress: 40,
+      warning_count: 1,
+      failure_code: null,
+      failure_reason: null,
+      task_counts: { succeeded: 4, queued: 2 },
+      finding_counts: {},
+      coverage_warning_count: 0,
+      completed_at: null,
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("6 个任务");
+    wrapper.unmount();
+  });
+
+  it("never reports a failed build or zero coverage before those stages ran", async () => {
+    auditRunApi.get.mockResolvedValue({
+      ...run,
+      status: "preprocessing",
+      current_stage: "preprocessing",
+    });
+    auditRunApi.coverage.mockResolvedValue({
+      ...coverage,
+      // Exactly what a freshly created AuditCoverage row holds mid-run.
+      build_status: "failed",
+      entrypoints_total: 47,
+      entrypoints_analyzed: 0,
+      sensitive_sinks_total: 128,
+      sensitive_sinks_analyzed: 0,
+    });
+
+    const wrapper = await renderView();
+
+    const badge = wrapper.get(".build-row .badge");
+    expect(badge.text()).toBe("尚未构建");
+    expect(badge.classes()).toContain("badge--neutral");
+    expect(wrapper.text()).toContain("待统计");
+    expect(wrapper.text()).not.toContain("0 / 47");
+    wrapper.unmount();
+  });
+
+  it("says so when the task list was truncated instead of showing a short list silently", async () => {
+    auditRunApi.tasks.mockResolvedValue({
+      items: [task("worker-alpha")],
+      meta: { limit: 500, offset: 0, total: 812 },
+    });
+
+    const wrapper = await renderView();
+
+    expect(wrapper.text()).toContain("本次运行共 812 个任务");
+    wrapper.unmount();
+  });
+
+  it("consumes the finding counts and coverage warnings the stream already carries", async () => {
+    const wrapper = await renderView();
+
+    stream.callback?.({
+      audit_run_id: run.id,
+      status: "human_review",
+      current_stage: "human_review",
+      progress: 90,
+      warning_count: 3,
+      failure_code: null,
+      failure_reason: null,
+      task_counts: { succeeded: 4 },
+      finding_counts: { candidate: 8, awaiting_human_review: 2 },
+      coverage_warning_count: 3,
+      completed_at: null,
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("等待人工处置 2 个 Finding");
+    expect(wrapper.text()).toContain("待人工 2");
+    expect(wrapper.text()).toContain("候选 8");
+    wrapper.unmount();
+  });
+
+  it("rebuilds a narrative from consecutive snapshots", async () => {
+    const wrapper = await renderView();
+    const base = {
+      audit_run_id: run.id,
+      progress: 40,
+      warning_count: 0,
+      failure_code: null,
+      failure_reason: null,
+      task_counts: {},
+      finding_counts: {},
+      coverage_warning_count: 0,
+      completed_at: null,
+    } as const;
+
+    stream.callback?.({ ...base, status: "static_scanning", current_stage: "static_scanning" });
+    await flushPromises();
+    stream.callback?.({
+      ...base,
+      status: "semantic_auditing",
+      current_stage: "semantic_auditing",
+      finding_counts: { candidate: 5 },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("进入 AI 语义审计");
+    expect(wrapper.text()).toContain("新增 5 个候选（累计 5）");
+    wrapper.unmount();
+  });
+
   it("lets an admin delete a settled run after explicit confirmation", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const wrapper = await renderView();
