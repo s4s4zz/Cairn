@@ -387,10 +387,12 @@ def test_the_probe_exchanges_are_saved_as_evidence(
     ]
     assert exchanges
     assert any("毫秒" in evidence.summary for evidence in exchanges)
-    assert all(
-        evidence.summary.split("：", 1)[0] in {"基线请求", "攻击请求"}
-        for evidence in exchanges
-    )
+    # Both halves, not one: the attack request is the half that carries the
+    # finding, and evidence deduplication used to collapse the pair into the
+    # baseline because neither row names an Artifact.
+    assert {"基线请求", "攻击请求"} == {
+        evidence.summary.split("：", 1)[0] for evidence in exchanges
+    }
 
 
 # --- what still cannot produce a runtime verdict ------------------------------

@@ -235,15 +235,28 @@ class FindingService:
         artifact_id: UUID | None = None,
         sha256: str | None = None,
     ) -> Evidence:
-        """Attach one evidence record, skipping an identical existing one.
+        """Attach one evidence record, skipping one that names the same Artifact.
 
-        Deduplicated on (type, artifact) so re-running a stage after a crash
-        does not multiply the evidence list.
+        Deduplicated on ``(type, artifact_id)``, so re-running a stage after a
+        crash does not multiply the evidence list: an Artifact is
+        content-addressed, and a second row pointing at it records nothing the
+        first does not.
+
+        Artifact-less evidence is never deduplicated, because there is no
+        identity there to compare. Two rows of the same type are two distinct
+        observations — §7.7 requires the baseline *and* the payload exchange of
+        a dynamic probe be kept, and treating the pair as one row would have
+        discarded the attack request, which is the half that carries the
+        finding.
         """
 
-        for existing in finding.evidence:
-            if existing.type == evidence_type.value and existing.artifact_id == artifact_id:
-                return existing
+        if artifact_id is not None:
+            for existing in finding.evidence:
+                if (
+                    existing.type == evidence_type.value
+                    and existing.artifact_id == artifact_id
+                ):
+                    return existing
         evidence = Evidence(
             finding_id=finding.id,
             type=evidence_type.value,

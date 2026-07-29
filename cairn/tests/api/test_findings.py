@@ -6,6 +6,8 @@ import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from cairn.server.domain.enums import (
+    ArtifactAccessLevel,
+    ArtifactKind,
     AuditTaskStatus,
     AuditTaskType,
     EvidenceType,
@@ -16,7 +18,12 @@ from cairn.server.domain.enums import (
     VerificationVerdict,
 )
 from cairn.server.errors import ConflictError
-from cairn.server.persistence.models import AuditTask, Evidence, Verification
+from cairn.server.persistence.models import (
+    Artifact,
+    AuditTask,
+    Evidence,
+    Verification,
+)
 from cairn.server.schemas.findings import CandidateFindingCommand
 from cairn.server.services.findings import FindingService
 
@@ -56,6 +63,35 @@ def create_run(client: TestClient) -> dict[str, object]:
     )
     assert response.status_code == 201
     return response.json()
+
+
+def probe_task(audit_run_id: UUID) -> AuditTask:
+    """The task an evidence row is attributed to. Unflushed; the caller adds it."""
+
+    return AuditTask(
+        audit_run_id=audit_run_id,
+        type=AuditTaskType.DYNAMIC_VERIFY.value,
+        scope={"module": "app"},
+        required_capabilities=["dynamic:probe"],
+        status=AuditTaskStatus.SUCCEEDED.value,
+        attempt=1,
+        max_attempts=1,
+        timeout_seconds=300,
+        input_artifact_ids=[],
+        output_artifact_ids=[],
+    )
+
+
+def stored_artifact(audit_run_id: UUID) -> Artifact:
+    return Artifact(
+        audit_run_id=audit_run_id,
+        kind=ArtifactKind.SCAN_RESULT.value,
+        storage_key="tool-results/semgrep.json",
+        sha256="e" * 64,
+        size_bytes=64,
+        media_type="application/json",
+        access_level=ArtifactAccessLevel.NORMAL.value,
+    )
 
 
 def candidate_payload(
@@ -232,6 +268,89 @@ def test_detail_returns_locations_evidence_and_verifications(
     assert detail["verifications"][0]["evidence_ids"] == [
         detail["evidence"][0]["id"]
     ]
+
+
+def test_artifact_less_evidence_of_one_type_is_kept_row_per_observation(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """§7.7 wants both halves of a probe kept, and neither names an Artifact.
+
+    Deduplicating them on ``(type, artifact_id)`` matched on ``(http_exchange,
+    None)`` and silently discarded the attack request — the half that carries
+    the finding — leaving a reviewer with the baseline alone.
+    """
+
+    run = create_run(client)
+    with session_factory() as session:
+        task = probe_task(UUID(run["id"]))
+        session.add(task)
+        session.commit()
+        service = FindingService(session)
+        finding = service.create_candidate(
+            CandidateFindingCommand.model_validate(candidate_payload(run["id"]))
+        )
+
+        baseline = service.record_evidence(
+            finding,
+            evidence_type=EvidenceType.HTTP_EXCHANGE,
+            summary="基线请求：GET http://app/orders?q=1 -> 200，耗时 12 毫秒",
+            produced_by_task_id=task.id,
+        )
+        payload = service.record_evidence(
+            finding,
+            evidence_type=EvidenceType.HTTP_EXCHANGE,
+            summary="攻击请求：GET http://app/orders?q=1' OR '1'='1 -> 500，耗时 31 毫秒",
+            produced_by_task_id=task.id,
+        )
+
+        assert baseline is not payload
+        assert [item.summary for item in finding.evidence] == [
+            baseline.summary,
+            payload.summary,
+        ]
+
+
+def test_evidence_naming_the_same_artifact_is_recorded_once(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """An Artifact is content-addressed, so a second row citing it adds nothing.
+
+    This is what the deduplication is for: a stage resumed after a crash
+    re-records the artifacts it already attached.
+    """
+
+    run = create_run(client)
+    with session_factory() as session:
+        task = probe_task(UUID(run["id"]))
+        artifact = stored_artifact(UUID(run["id"]))
+        session.add_all([task, artifact])
+        session.commit()
+        service = FindingService(session)
+        finding = service.create_candidate(
+            CandidateFindingCommand.model_validate(candidate_payload(run["id"]))
+        )
+        artifact_id = artifact.id
+
+        first = service.record_evidence(
+            finding,
+            evidence_type=EvidenceType.TOOL_RESULT,
+            summary="该候选归一化前的工具原始输出（semgrep）。",
+            produced_by_task_id=task.id,
+            artifact_id=artifact_id,
+        )
+        again = service.record_evidence(
+            finding,
+            evidence_type=EvidenceType.TOOL_RESULT,
+            summary="重跑该阶段时再次记录的同一份产物。",
+            produced_by_task_id=task.id,
+            artifact_id=artifact_id,
+        )
+
+        assert again is first
+        assert len(finding.evidence) == 1
+        assert first.summary == "该候选归一化前的工具原始输出（semgrep）。"
 
 
 def test_public_finding_creation_is_not_exposed(client: TestClient) -> None:
