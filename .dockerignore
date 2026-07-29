@@ -7,6 +7,9 @@
 cairn/.pytest_cache
 cairn/.venv
 cairn/*.db
+cairn/web/coverage
+cairn/web/dist
+cairn/web/node_modules
 datas
 docs
 container

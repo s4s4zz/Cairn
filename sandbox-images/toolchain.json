@@ -1,6 +1,21 @@
 {
   "contract": "cairn-sandbox-toolchain-v1",
   "bundled": {
+    "asm": {
+      "path": "/opt/cairn/tools/asm-9.8.jar",
+      "sha256": "876eab6a83daecad5ca67eb9fcabb063c97b5aeb8cf1fca7a989ecde17522051",
+      "version": "9.8"
+    },
+    "cairn-bytecode-indexer": {
+      "main_class": "dev.cairn.bytecode.BytecodeIndexer",
+      "path": "/opt/cairn/tools/cairn-bytecode-indexer.jar",
+      "version": "1.0.0"
+    },
+    "cfr": {
+      "path": "/opt/cairn/tools/cfr-0.152.jar",
+      "sha256": "f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2",
+      "version": "0.152"
+    },
     "gradle": {
       "sha256": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
       "version": "8.14.3"
@@ -12,6 +27,12 @@
     "maven": {
       "sha512": "bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978",
       "version": "3.9.11"
+    },
+    "pydantic": {
+      "version": "2.12.5"
+    },
+    "pyyaml": {
+      "version": "6.0.3"
     },
     "semgrep": {
       "rules": "/opt/cairn/rules/semgrep",

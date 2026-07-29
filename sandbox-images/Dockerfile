@@ -1,13 +1,25 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
+ARG DEBIAN_MIRROR=https://deb.debian.org/debian
+ARG DEBIAN_SECURITY_MIRROR=https://deb.debian.org/debian-security
 ARG MAVEN_VERSION=3.9.11
 ARG MAVEN_SHA512=bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978
 ARG GRADLE_VERSION=8.14.3
 ARG GRADLE_SHA256=bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531
 ARG SEMGREP_VERSION=1.130.0
+ARG PYDANTIC_VERSION=2.12.5
+ARG PYYAML_VERSION=6.0.3
+ARG ASM_VERSION=9.8
+ARG ASM_SHA256=876eab6a83daecad5ca67eb9fcabb063c97b5aeb8cf1fca7a989ecde17522051
+ARG CFR_VERSION=0.152
+ARG CFR_SHA256=f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2
 
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends \
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install --yes --no-install-recommends \
         ca-certificates \
         curl \
         openjdk-17-jdk-headless \
@@ -36,13 +48,44 @@ RUN curl --fail --location --silent --show-error \
     && ln -s "/opt/gradle/gradle-${GRADLE_VERSION}" /opt/gradle/current \
     && rm /tmp/gradle.zip
 
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends libstdc++6 \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install --yes --no-install-recommends \
+        libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN uv pip install --system --no-cache \
     "semgrep==${SEMGREP_VERSION}" \
-    "setuptools==80.9.0"
+    "setuptools==80.9.0" \
+    "pydantic==${PYDANTIC_VERSION}" \
+    "pyyaml==${PYYAML_VERSION}"
+
+RUN mkdir -p /opt/cairn/tools \
+    && curl --fail --location --silent --show-error \
+        "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/${ASM_VERSION}/asm-${ASM_VERSION}.jar" \
+        --output "/opt/cairn/tools/asm-${ASM_VERSION}.jar" \
+    && echo "${ASM_SHA256}  /opt/cairn/tools/asm-${ASM_VERSION}.jar" \
+        | sha256sum --check --strict \
+    && curl --fail --location --silent --show-error \
+        "https://repo.maven.apache.org/maven2/org/benf/cfr/${CFR_VERSION}/cfr-${CFR_VERSION}.jar" \
+        --output "/opt/cairn/tools/cfr-${CFR_VERSION}.jar" \
+    && echo "${CFR_SHA256}  /opt/cairn/tools/cfr-${CFR_VERSION}.jar" \
+        | sha256sum --check --strict
+
+COPY ./sandbox-images/java/dev/cairn/bytecode/BytecodeIndexer.java \
+    /tmp/cairn-bytecode-helper/dev/cairn/bytecode/BytecodeIndexer.java
+RUN mkdir -p /tmp/cairn-bytecode-helper/classes \
+    && javac \
+        --release 17 \
+        -encoding UTF-8 \
+        -cp "/opt/cairn/tools/asm-${ASM_VERSION}.jar" \
+        -d /tmp/cairn-bytecode-helper/classes \
+        /tmp/cairn-bytecode-helper/dev/cairn/bytecode/BytecodeIndexer.java \
+    && jar --create \
+        --file /opt/cairn/tools/cairn-bytecode-indexer.jar \
+        --main-class dev.cairn.bytecode.BytecodeIndexer \
+        -C /tmp/cairn-bytecode-helper/classes . \
+    && rm -rf /tmp/cairn-bytecode-helper \
+    && chmod 0444 /opt/cairn/tools/*.jar
 
 RUN groupadd --gid 65532 sandbox \
     && useradd \

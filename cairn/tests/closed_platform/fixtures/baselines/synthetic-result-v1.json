@@ -1,0 +1,42 @@
+{
+  "audit_run_export_sha256": "02195b826b0bc48980bc9a54d1b82f1ec99d3a74ea0da49cc8e430e676eea5be",
+  "audit_run_id": "synthetic-contract-baseline-001",
+  "benchmark_id": "synthetic-contract-cp0-v1",
+  "dataset_visibility": "synthetic",
+  "gold_manifest_sha256": "a1dac7dd32687dcc575829c3fc5a2c85d4d979addb560ba4d98efc1f70871b42",
+  "label_status": "provisional",
+  "metrics": {
+    "coverage_gap": {
+      "denominator": 11,
+      "numerator": 0,
+      "value": 0.0
+    },
+    "critical_high_recall": {
+      "denominator": 1,
+      "numerator": 1,
+      "value": 1.0
+    },
+    "dynamic_reproduction": {
+      "denominator": 0,
+      "numerator": 0,
+      "value": null
+    },
+    "entrypoint_recall": {
+      "denominator": 3,
+      "numerator": 3,
+      "value": 1.0
+    },
+    "evidence_completeness": {
+      "denominator": 5,
+      "numerator": 5,
+      "value": 1.0
+    },
+    "precision": {
+      "denominator": 1,
+      "numerator": 1,
+      "value": 1.0
+    }
+  },
+  "sample_sha256": "43621e45c98eff1812f52084ae3cda69ba8b6b85676dc2b1dbf82faacff58a71",
+  "schema_version": "benchmark-result-v1"
+}

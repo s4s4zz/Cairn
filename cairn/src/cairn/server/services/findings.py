@@ -1,13 +1,17 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from cairn.server.domain.enums import (
+    AuditRunStatus,
+    AuditTaskStatus,
+    AuditTaskType,
     EvidenceType,
     FindingSeverity,
     FindingStatus,
+    ReviewVerdict,
     RuntimeVerificationStatus,
     VerificationMethod,
     VerificationVerdict,
@@ -16,12 +20,20 @@ from cairn.server.domain.state_machines import InvalidTransition, transition_fin
 from cairn.server.errors import ConflictError, InvalidStateError, NotFoundError
 from cairn.server.persistence.models import (
     AuditRun,
+    AuditTask,
     Evidence,
     Finding,
     FindingLocation,
+    HumanReview,
+    SourceSnapshot,
     Verification,
 )
-from cairn.server.schemas.findings import CandidateFindingCommand, FindingFilters
+from cairn.server.schemas.findings import (
+    CandidateFindingCommand,
+    FindingFilters,
+    FindingReviewRequest,
+    FindingReverifyRequest,
+)
 
 # §7.8 requires these into independent review, and §13.6 makes that a gate on
 # the human queue.
@@ -67,11 +79,21 @@ class FindingService:
         finding.locations = [
             FindingLocation(
                 role=location.role.value,
+                origin_kind=location.origin_kind.value,
                 file_path=location.file_path,
                 start_line=location.start_line,
                 end_line=location.end_line,
                 symbol=location.symbol,
                 code_snippet=location.code_snippet,
+                container_path=location.container_path,
+                entry_path=location.entry_path,
+                class_name=location.class_name,
+                method_name=location.method_name,
+                method_descriptor=location.method_descriptor,
+                bytecode_offset=location.bytecode_offset,
+                decompiled_artifact_id=location.decompiled_artifact_id,
+                decompiled_start_line=location.decompiled_start_line,
+                decompiled_end_line=location.decompiled_end_line,
                 snapshot_sha=location.snapshot_sha,
                 ordinal=location.ordinal,
             )
@@ -234,6 +256,98 @@ class FindingService:
         finding.evidence.append(evidence)
         return evidence
 
+    def review(
+        self,
+        finding_id: UUID,
+        request: FindingReviewRequest,
+        *,
+        reviewer_id: UUID,
+    ) -> tuple[Finding, HumanReview]:
+        """Record one final human decision without committing the transaction."""
+
+        finding = self._lock_for_human_action(finding_id)
+        original_severity = FindingSeverity(finding.severity)
+        final_severity = request.final_severity or original_severity
+        target = {
+            ReviewVerdict.CONFIRMED.value: FindingStatus.CONFIRMED,
+            ReviewVerdict.REJECTED.value: FindingStatus.REJECTED,
+            ReviewVerdict.ACCEPTED_RISK.value: FindingStatus.ACCEPTED_RISK,
+        }[request.verdict]
+
+        review = HumanReview(
+            finding_id=finding.id,
+            verdict=request.verdict,
+            original_severity=original_severity.value,
+            final_severity=final_severity.value,
+            reviewer_id=str(reviewer_id),
+            comment=request.comment,
+        )
+        finding.severity = final_severity.value
+        self.transition(finding, target)
+        finding.human_reviews.append(review)
+        self.session.add(review)
+        self.session.flush()
+        return finding, review
+
+    def request_reverification(
+        self,
+        finding_id: UUID,
+        request: FindingReverifyRequest,
+        *,
+        reviewer_id: UUID,
+    ) -> tuple[Finding, HumanReview, AuditTask]:
+        """Return a queued verification task and its review record atomically."""
+
+        finding = self._lock_for_human_action(finding_id)
+        severity = FindingSeverity(finding.severity)
+        run = self.session.get(AuditRun, finding.audit_run_id)
+        assert run is not None
+        input_artifact_ids: list[str] = []
+        if run.snapshot_id is not None:
+            snapshot = self.session.get(SourceSnapshot, run.snapshot_id)
+            if snapshot is not None:
+                input_artifact_ids.append(str(snapshot.artifact_id))
+
+        review = HumanReview(
+            finding_id=finding.id,
+            verdict=ReviewVerdict.REVERIFY.value,
+            original_severity=severity.value,
+            final_severity=severity.value,
+            reviewer_id=str(reviewer_id),
+            comment=request.comment,
+        )
+        task_type = (
+            AuditTaskType.INDEPENDENT_VERIFY
+            if request.method == VerificationMethod.INDEPENDENT_AGENT.value
+            else AuditTaskType.DYNAMIC_VERIFY
+        )
+        task = AuditTask(
+            audit_run_id=finding.audit_run_id,
+            type=task_type.value,
+            scope_key=f"reverify:{finding.id}:{uuid4().hex}",
+            scope={
+                "finding_id": str(finding.id),
+                "verification_method": request.method,
+                "requested_by": str(reviewer_id),
+            },
+            required_capabilities=(
+                [f"verify:{finding.category}"]
+                if task_type is AuditTaskType.INDEPENDENT_VERIFY
+                else ["dynamic:http"]
+            ),
+            status=AuditTaskStatus.QUEUED.value,
+            attempt=0,
+            max_attempts=3,
+            timeout_seconds=900,
+            input_artifact_ids=input_artifact_ids,
+            output_artifact_ids=[],
+        )
+        self.transition(finding, FindingStatus.VALIDATING)
+        finding.human_reviews.append(review)
+        self.session.add_all([review, task])
+        self.session.flush()
+        return finding, review, task
+
     def get(self, finding_id: UUID) -> Finding:
         finding = self.session.scalar(
             select(Finding)
@@ -242,6 +356,7 @@ class FindingService:
                 selectinload(Finding.locations),
                 selectinload(Finding.evidence),
                 selectinload(Finding.verifications),
+                selectinload(Finding.human_reviews),
             )
         )
         if finding is None:
@@ -273,6 +388,39 @@ class FindingService:
             )
         )
         return findings, total
+
+    def _lock_for_human_action(self, finding_id: UUID) -> Finding:
+        """Lock run before Finding so report generation cannot race a review."""
+
+        run_id = self.session.scalar(
+            select(Finding.audit_run_id).where(Finding.id == finding_id)
+        )
+        if run_id is None:
+            raise NotFoundError("finding", finding_id)
+        audit_run = self.session.scalar(
+            select(AuditRun).where(AuditRun.id == run_id).with_for_update()
+        )
+        if audit_run is None:
+            raise NotFoundError("audit_run", run_id)
+        if audit_run.status != AuditRunStatus.HUMAN_REVIEW.value:
+            raise InvalidStateError(
+                "findings can only be reviewed while the audit run is in human review",
+                error_code="audit_run_not_in_human_review",
+            )
+        finding = self.session.scalar(
+            select(Finding)
+            .where(Finding.id == finding_id)
+            .with_for_update()
+            .options(selectinload(Finding.human_reviews))
+        )
+        if finding is None:
+            raise NotFoundError("finding", finding_id)
+        if finding.status != FindingStatus.AWAITING_HUMAN_REVIEW.value:
+            raise InvalidStateError(
+                "only findings awaiting human review can be reviewed",
+                error_code="finding_not_awaiting_human_review",
+            )
+        return finding
 
     @staticmethod
     def _raise_duplicate(command: CandidateFindingCommand) -> None:

@@ -19,6 +19,12 @@ from cairn.gateway.errors import GatewayError, grant_invalid, request_invalid
 from cairn.gateway.policy import GatewayPolicy
 from cairn.gateway.tokens import ModelGrant
 from cairn.gateway.upstream import UpstreamClient
+from cairn.model_provider import (
+    ModelProviderConfigError,
+    ModelProviderConfiguration,
+    ModelProviderConfigStore,
+    load_model_config_key,
+)
 from cairn.server.errors import register_error_handlers
 
 LOG = logging.getLogger(__name__)
@@ -29,8 +35,8 @@ async def _read_bounded_body(request: Request, limit: int) -> bytes:
 
     ``Request.body()`` concatenates the whole stream with no bound, and uvicorn
     imposes none either, so checking the length afterwards means the bytes have
-    already been accepted. This service holds the platform's only long-term
-    model key, and everything on the internal analysis network can reach it
+    already been accepted. This service holds model-egress key material, and
+    everything on the internal analysis network can reach it
     without presenting a valid grant, so the cheapest possible refusal has to
     come first.
     """
@@ -124,12 +130,22 @@ def create_gateway_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        api_key = read_key_file(settings.api_key_file)
         grant_key = read_key_file(settings.grant_key_file)
+        provider_store: ModelProviderConfigStore | None = None
+        api_key = b""
+        if settings.provider_config_file is not None:
+            provider_store = ModelProviderConfigStore(
+                settings.provider_config_file,
+                load_model_config_key(settings.config_key_file),
+            )
+        else:
+            assert settings.api_key_file is not None
+            api_key = read_key_file(settings.api_key_file)
         owned_upstream = upstream is None
         active_upstream = upstream or UpstreamClient(settings)
         application.state.gateway_settings = settings
         application.state.api_key = api_key
+        application.state.provider_store = provider_store
         application.state.gateway_policy = GatewayPolicy(settings, grant_key)
         application.state.upstream = active_upstream
         try:
@@ -159,9 +175,17 @@ def create_gateway_app(
         # this is a sanity assertion rather than a live dependency check. It
         # carries its own health code so the request-policy codes keep their
         # documented one-to-one mapping onto HTTP statuses.
-        if not getattr(application.state, "api_key", b"") or not getattr(
-            application.state, "gateway_policy", None
-        ):
+        provider_store: ModelProviderConfigStore | None = getattr(
+            application.state, "provider_store", None
+        )
+        configured = bool(getattr(application.state, "api_key", b""))
+        if provider_store is not None:
+            try:
+                provider_store.read()
+                configured = True
+            except ModelProviderConfigError:
+                configured = False
+        if not configured or not getattr(application.state, "gateway_policy", None):
             raise GatewayError(
                 "LLM_GATEWAY_NOT_READY",
                 "Gateway is not holding a model API key",
@@ -173,7 +197,7 @@ def create_gateway_app(
     async def create_message(request: Request) -> JSONResponse:
         policy: GatewayPolicy = application.state.gateway_policy
         active_upstream: UpstreamClient = application.state.upstream
-        api_key: bytes = application.state.api_key
+        provider_store: ModelProviderConfigStore | None = application.state.provider_store
 
         # The raw bytes are measured before parsing so the size cap reflects
         # what was actually transferred, not the re-serialized form. Reading is
@@ -190,7 +214,27 @@ def create_gateway_app(
         if not isinstance(decoded, dict):
             raise request_invalid("Request body must be a JSON object")
 
-        grant = policy.authorize(token, decoded, len(raw))
+        provider_configuration: ModelProviderConfiguration | bytes
+        if provider_store is None:
+            provider_configuration = application.state.api_key
+            allowed_models = settings.model_allowlist
+        else:
+            try:
+                provider_configuration = provider_store.read()
+            except ModelProviderConfigError as exc:
+                raise GatewayError(
+                    "LLM_GATEWAY_NOT_READY",
+                    "Model provider is not configured",
+                    http_status=503,
+                ) from exc
+            allowed_models = (provider_configuration.metadata.model,)
+
+        grant = policy.authorize(
+            token,
+            decoded,
+            len(raw),
+            allowed_models=allowed_models,
+        )
         # `authorize` reserved this much of the grant's output budget up front;
         # it is reconciled to actual usage below, or released on failure.
         reserved = decoded.get("max_tokens")
@@ -200,7 +244,7 @@ def create_gateway_app(
             payload = await run_in_threadpool(
                 active_upstream.forward,
                 decoded,
-                api_key,
+                provider_configuration,
             )
         except GatewayError:
             # A transport or upstream-status failure trips the breaker. A

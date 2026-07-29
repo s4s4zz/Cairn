@@ -67,10 +67,21 @@ def test_server_migrates_before_starting_and_uses_database_url() -> None:
         server["environment"]["CAIRN_INGESTION_WORK_ROOT"]
         == "/var/lib/cairn/ingestion"
     )
-    assert server["volumes"] == [
+    assert server["environment"]["CAIRN_SESSION_COOKIE_SECURE"] == "false"
+    assert server["volumes"][:2] == [
         "cairn-artifact-data:/var/lib/cairn/artifacts",
         "cairn-ingestion-data:/var/lib/cairn/ingestion",
     ]
+    mounts = {
+        mount["target"]: mount
+        for mount in server["volumes"]
+        if isinstance(mount, dict)
+    }
+    assert mounts["/var/lib/cairn/llm"].get("read_only", False) is False
+    assert mounts["/run/secrets/cairn_master_key"]["read_only"] is True
+    assert server["environment"]["CAIRN_LLM_PROVIDER_CONFIG_FILE"] == (
+        "/var/lib/cairn/llm/provider.json"
+    )
 
 
 def test_no_service_is_privileged_or_uses_host_networking() -> None:
@@ -112,6 +123,17 @@ def test_sandbox_manager_is_internal_and_is_the_only_daemon_client() -> None:
         manager["environment"]["CAIRN_SANDBOX_HELPER_IMAGE"]
         == "${CAIRN_SANDBOX_HELPER_IMAGE:-cairn-sandbox-helper:local}"
     )
+    shared_work_root = (
+        "${CAIRN_SANDBOX_HOST_WORK_ROOT:-/var/lib/cairn/sandbox-work}"
+    )
+    assert manager["environment"]["CAIRN_SANDBOX_WORK_ROOT"] == shared_work_root
+    work_mount = next(
+        mount
+        for mount in manager["volumes"]
+        if isinstance(mount, dict)
+        and mount["source"] == shared_work_root
+    )
+    assert work_mount["target"] == shared_work_root
     orchestrator_mounts = "\n".join(
         str(item) for item in orchestrator.get("volumes", [])
     )
@@ -204,28 +226,33 @@ def test_llm_gateway_is_hardened_like_the_sandbox_manager() -> None:
     assert gateway.get("network_mode") != "host"
 
 
-def test_llm_gateway_owns_both_key_files_read_only() -> None:
+def test_llm_gateway_owns_encrypted_provider_config_and_keys_read_only() -> None:
     gateway = load_compose()["services"]["cairn-llm-gateway"]
     environment = gateway["environment"]
 
-    assert environment["CAIRN_LLM_API_KEY_FILE"] == "/run/secrets/cairn_llm_api_key"
     assert environment["CAIRN_LLM_GRANT_KEY_FILE"] == "/run/secrets/cairn_llm_grant_key"
+    assert environment["CAIRN_LLM_CONFIG_KEY_FILE"] == "/run/secrets/cairn_master_key"
+    assert environment["CAIRN_LLM_PROVIDER_CONFIG_FILE"] == (
+        "/var/lib/cairn/llm/provider.json"
+    )
+    assert "CAIRN_LLM_API_KEY_FILE" not in environment
     mounts = {mount["target"]: mount for mount in gateway["volumes"]}
     assert set(mounts) == {
-        "/run/secrets/cairn_llm_api_key",
         "/run/secrets/cairn_llm_grant_key",
+        "/run/secrets/cairn_master_key",
+        "/var/lib/cairn/llm",
     }
     for mount in mounts.values():
         assert mount["type"] == "bind"
         assert mount["read_only"] is True
-    assert mounts["/run/secrets/cairn_llm_api_key"]["source"] == (
-        "${CAIRN_LLM_API_KEY_HOST_FILE:-/var/lib/cairn/secrets/llm-api-key}"
+    assert mounts["/run/secrets/cairn_master_key"]["source"] == (
+        "${CAIRN_SECRET_KEY_HOST_FILE:-/var/lib/cairn/secrets/master-key}"
     )
     assert mounts["/run/secrets/cairn_llm_grant_key"]["source"] == (
         "${CAIRN_LLM_GRANT_KEY_HOST_FILE:-/var/lib/cairn/secrets/llm-grant-key}"
     )
-    assert environment["CAIRN_LLM_UPSTREAM_BASE_URL"] == (
-        "${CAIRN_LLM_UPSTREAM_BASE_URL:-https://api.anthropic.com}"
+    assert mounts["/var/lib/cairn/llm"]["source"] == (
+        "${CAIRN_LLM_CONFIG_HOST_DIR:-/var/lib/cairn/llm}"
     )
 
 
@@ -246,6 +273,17 @@ def test_orchestrator_mints_grants_without_holding_the_model_api_key() -> None:
     # Nor may it reach the internet directly: model traffic goes through the
     # Gateway, which is the only service on the egress network.
     assert "cairn-llm-egress" not in orchestrator["networks"]
+    assert environment["CAIRN_LLM_PROVIDER_CONFIG_FILE"] == (
+        "/var/lib/cairn/llm/provider.json"
+    )
+    provider_mount = next(
+        mount
+        for mount in orchestrator["volumes"]
+        if isinstance(mount, dict) and mount["target"] == "/var/lib/cairn/llm"
+    )
+    assert provider_mount["read_only"] is True
+    assert "CAIRN_LLM_CONFIG_KEY_FILE" not in environment
+    assert "cairn_master_key" not in rendered
 
     for name, service in compose["services"].items():
         if name == "cairn-llm-gateway":
@@ -257,12 +295,24 @@ def test_orchestrator_mints_grants_without_holding_the_model_api_key() -> None:
 def test_application_image_uses_supported_python_and_non_root_user() -> None:
     dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text()
 
+    assert "FROM node:22-bookworm-slim AS workbench-build" in dockerfile
+    assert "npm ci" in dockerfile
+    assert "npm run build" in dockerfile
+    assert "/workbench/dist ./src/cairn/server/static" in dockerfile
     assert "python3.12" in dockerfile
     assert "USER cairn" in dockerfile
     assert "--no-dev" in dockerfile
     assert "git" in dockerfile
     assert "openssh-client" in dockerfile
     assert "/var/lib/cairn/sandbox-state" in dockerfile
+
+
+def test_workbench_build_context_excludes_local_outputs() -> None:
+    dockerignore = (REPOSITORY_ROOT / ".dockerignore").read_text().splitlines()
+
+    assert "cairn/web/node_modules" in dockerignore
+    assert "cairn/web/dist" in dockerignore
+    assert "cairn/web/coverage" in dockerignore
 
 
 def test_sandbox_template_image_is_non_root_and_has_fixed_toolchain() -> None:
@@ -278,6 +328,8 @@ def test_sandbox_template_image_is_non_root_and_has_fixed_toolchain() -> None:
     assert "run-validation" in dockerfile
     assert "normalize-workspace-permissions" in dockerfile
     assert "openjdk-17-jdk-headless" in dockerfile
+    assert "DEBIAN_MIRROR" in dockerfile
+    assert "Acquire::Retries=5" in dockerfile
     assert "MAVEN_VERSION=3.9.11" in dockerfile
     assert "GRADLE_VERSION=8.14.3" in dockerfile
     assert "SEMGREP_VERSION=1.130.0" in dockerfile
@@ -298,6 +350,23 @@ def test_sandbox_template_image_is_non_root_and_has_fixed_toolchain() -> None:
     assert toolchain["bundled"]["jdk"]["major_version"] == "17"
     assert toolchain["bundled"]["semgrep"]["version"] == "1.130.0"
     assert toolchain["bundled"]["semgrep"]["setuptools_version"] == "80.9.0"
+    assert toolchain["bundled"]["asm"] == {
+        "path": "/opt/cairn/tools/asm-9.8.jar",
+        "sha256": "876eab6a83daecad5ca67eb9fcabb063c97b5aeb8cf1fca7a989ecde17522051",
+        "version": "9.8",
+    }
+    assert toolchain["bundled"]["cfr"] == {
+        "path": "/opt/cairn/tools/cfr-0.152.jar",
+        "sha256": "f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2",
+        "version": "0.152",
+    }
+    assert toolchain["bundled"]["cairn-bytecode-indexer"] == {
+        "main_class": "dev.cairn.bytecode.BytecodeIndexer",
+        "path": "/opt/cairn/tools/cairn-bytecode-indexer.jar",
+        "version": "1.0.0",
+    }
+    assert toolchain["bundled"]["pydantic"] == {"version": "2.12.5"}
+    assert toolchain["bundled"]["pyyaml"] == {"version": "6.0.3"}
     assert set(toolchain["administrator_provisioned"]) == {
         "codeql",
         "dependency-check",
@@ -332,9 +401,11 @@ def test_sandbox_manager_image_is_separate_and_has_no_git_clients() -> None:
 
 
 def test_the_sandbox_manager_holds_no_model_credential() -> None:
-    """§5.1: the long-term model key exists only in the LLM Gateway. The
-    Manager launches the semantic container but must not be able to read what
-    the container will authenticate with."""
+    """§5.1: the Manager must never receive provider key material.
+
+    It launches the semantic container, but that container authenticates only
+    with a short-lived grant and reaches the key-holding Gateway.
+    """
 
     manager = load_compose()["services"]["cairn-sandbox-manager"]
     environment = manager.get("environment", {})
@@ -350,6 +421,18 @@ def test_the_sandbox_manager_knows_the_semantic_image_and_network() -> None:
 
     assert "CAIRN_SANDBOX_SEMANTIC_IMAGE" in environment
     assert "CAIRN_SANDBOX_SEMANTIC_NETWORK" in environment
+
+
+def test_semantic_image_contains_dependency_light_grant_claims() -> None:
+    dockerfile = (
+        REPOSITORY_ROOT / "sandbox-images" / "Dockerfile.semantic"
+    ).read_text()
+
+    assert "cairn/model_grants.py" in dockerfile
+    assert "PYYAML_VERSION=6.0.3" in dockerfile
+    assert '"pyyaml==${PYYAML_VERSION}"' in dockerfile
+    assert "cairn/gateway" not in dockerfile
+    assert "cairn/server" not in dockerfile
 
 
 def test_the_semantic_network_is_not_bound_to_the_control_plane() -> None:

@@ -37,6 +37,7 @@ from cairn.semantic.contracts import (
 )
 from cairn.semantic.findings import ReviewScope, to_candidates
 from cairn.semantic.review import SemanticReviewer
+from cairn.model_grants import unverified_grant_model
 
 SCOPE_FILENAME = "cairn-semantic-scope.json"
 RESULT_FILENAME = "semantic-result.json"
@@ -148,6 +149,7 @@ def run(source: Path, scratch: Path, output: Path) -> SemanticReviewResult:
         return _failed(scope_key, REASON_SCOPE_INVALID)
     try:
         grant, gateway_url = take_credentials()
+        model = unverified_grant_model(grant)
     except ValueError:
         return _failed(scope_key, REASON_GRANT_MISSING)
     try:
@@ -160,6 +162,7 @@ def run(source: Path, scratch: Path, output: Path) -> SemanticReviewResult:
         client = SemanticModelClient(
             base_url=gateway_url,
             grant_token=grant,
+            model=model,
             max_tokens=max_tokens,
         )
     except (ImportError, ValueError):
@@ -173,6 +176,7 @@ def run(source: Path, scratch: Path, output: Path) -> SemanticReviewResult:
         client,
         broker,
         scope=scope,
+        model=model,
         max_turns=_positive_env(MAX_TURNS_ENV, 24),
     )
     result = reviewer.run()

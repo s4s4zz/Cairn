@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 
+from cairn.analysis.contracts import ProgramIndexV2
 from cairn.pipeline.catalogue import (
     GENERIC_REMEDIATION,
     REMEDIATION_BY_CWE,
@@ -22,8 +23,10 @@ from cairn.pipeline.catalogue import (
 )
 from cairn.pipeline.promote import (
     REASON_CONTRACT_INVALID,
+    REASON_LOCATION_NOT_IN_PROGRAM_INDEX,
     REASON_NO_CWE,
     REASON_PATH_MISSING,
+    REASON_PROGRAM_INDEX_REQUIRED,
     promote_candidates,
 )
 from cairn.pipeline.snippets import (
@@ -36,6 +39,13 @@ from cairn.pipeline.snippets import (
 SOURCE = "web/src/main/java/dev/cairn/OrderController.java"
 OTHER = "core/src/main/java/dev/cairn/OrderRepository.java"
 SNAPSHOT_SHA = "c" * 64
+CONTAINER = "sample.war"
+ENTRY = "WEB-INF/lib/app.jar!/demo/Action.class"
+LOGICAL = f"{CONTAINER}!/{ENTRY}"
+CLASS_NAME = "demo.Action"
+METHOD_NAME = "execute"
+METHOD_DESCRIPTOR = "(Ljava/lang/String;)V"
+BYTECODE_OFFSET = 18
 
 
 def write_archive(path: Path, files: dict[str, str]) -> Path:
@@ -105,12 +115,122 @@ def candidate(**overrides: object) -> dict[str, object]:
     return payload
 
 
-def promote(candidates: list[dict[str, object]], archive: Path):
+def promote(
+    candidates: list[dict[str, object]],
+    archive: Path,
+    *,
+    program_index: ProgramIndexV2 | None = None,
+):
     return promote_candidates(
         candidates,
         audit_run_id=uuid4(),
         archive_path=archive,
         snapshot_sha256=SNAPSHOT_SHA,
+        program_index=program_index,
+    )
+
+
+def bytecode_location(**overrides: object) -> dict[str, object]:
+    location: dict[str, object] = {
+        "origin_kind": "bytecode",
+        "container_path": CONTAINER,
+        "entry_path": ENTRY,
+        "class_name": CLASS_NAME,
+        "method_name": METHOD_NAME,
+        "method_descriptor": METHOD_DESCRIPTOR,
+        "bytecode_offset": BYTECODE_OFFSET,
+        "source_path": None,
+        "start_line": None,
+        "end_line": None,
+        "decompiled_artifact_id": None,
+        "decompiled_start_line": None,
+        "decompiled_end_line": None,
+        "symbol": f"{CLASS_NAME}.{METHOD_NAME}",
+        "role": "sink",
+    }
+    location.update(overrides)
+    return location
+
+
+def program_index(
+    *,
+    logical_path: str = LOGICAL,
+    container_path: str | None = CONTAINER,
+    entry_path: str = ENTRY,
+    class_name: str = CLASS_NAME,
+    method_name: str = METHOD_NAME,
+    method_descriptor: str = METHOD_DESCRIPTOR,
+    bytecode_offset: int = BYTECODE_OFFSET,
+    source_line: int | None = None,
+) -> ProgramIndexV2:
+    identity = {
+        "logical_path": logical_path,
+        "container_path": container_path,
+        "entry_path": entry_path,
+        "class_sha256": "d" * 64,
+        "class_name": class_name,
+    }
+    return ProgramIndexV2.model_validate(
+        {
+            "contract": "cairn-program-index-v2",
+            "asm_version": "9.8",
+            "target_java_version": 17,
+            "components": [],
+            "resources": [],
+            "classes": [
+                {
+                    **identity,
+                    "super_name": "java.lang.Object",
+                    "interfaces": [],
+                    "access": 1,
+                    "classfile_major": 61,
+                    "signature": None,
+                    "source_file": "Action.java" if source_line else None,
+                    "annotations": [],
+                }
+            ],
+            "methods": [
+                {
+                    **identity,
+                    "method_name": method_name,
+                    "method_descriptor": method_descriptor,
+                    "access": 1,
+                    "signature": None,
+                    "exceptions": [],
+                    "annotations": [],
+                    "start_line": source_line,
+                    "end_line": source_line,
+                    "first_bytecode_offset": 0,
+                    "last_bytecode_offset": max(bytecode_offset, 24),
+                }
+            ],
+            "fields": [],
+            "calls": [
+                {
+                    **identity,
+                    "method_name": method_name,
+                    "method_descriptor": method_descriptor,
+                    "bytecode_offset": bytecode_offset,
+                    "source_line": source_line,
+                    "opcode": 184,
+                    "edge_kind": "exact",
+                    "target_owner": "java.sql.Statement",
+                    "target_name": "execute",
+                    "target_descriptor": "(Ljava/lang/String;)Z",
+                    "interface": False,
+                    "callsite_name": None,
+                    "callsite_descriptor": None,
+                    "bootstrap_owner": None,
+                    "bootstrap_name": None,
+                    "bootstrap_descriptor": None,
+                }
+            ],
+            "field_accesses": [],
+            "decompiled_views": [],
+            "coverage_gaps": [],
+            "classes_total": 1,
+            "classes_parsed": 1,
+        }
     )
 
 
@@ -128,6 +248,28 @@ def test_a_complete_candidate_becomes_a_finding_command(archive: Path) -> None:
     assert command.confidence.value == "medium"
     assert command.remediation == REMEDIATION_BY_CWE["CWE-89"]
     assert command.title == "SQL injection in OrderController.list"
+
+
+def test_v1_title_without_a_symbol_keeps_the_path_only(archive: Path) -> None:
+    command = promote(
+        [
+            candidate(
+                call_chain=[],
+                locations=[
+                    {
+                        "path": SOURCE,
+                        "start_line": 12,
+                        "end_line": 14,
+                        "symbol": None,
+                        "role": "sink",
+                    }
+                ],
+            )
+        ],
+        archive,
+    ).commands[0]
+
+    assert command.title == f"SQL injection in {SOURCE}"
 
 
 def test_locations_lead_with_the_call_chain_in_order(archive: Path) -> None:
@@ -174,6 +316,188 @@ def test_a_scanner_candidate_without_prose_gets_honest_placeholders(
     assert "Not established" in command.attack_preconditions
     assert "semgrep" in command.attack_preconditions
     assert "Not established" in command.impact
+
+
+# --- bytecode evidence --------------------------------------------------------
+
+
+def test_bytecode_location_is_promoted_from_index_without_reading_snapshot_as_source(
+    tmp_path: Path,
+) -> None:
+    artifact_id = uuid4()
+    not_a_snapshot = tmp_path / "opaque.snapshot"
+    not_a_snapshot.write_bytes(b"this is deliberately not a tar archive")
+    location = bytecode_location(
+        origin_kind="decompiled",
+        decompiled_artifact_id=str(artifact_id),
+        decompiled_start_line=31,
+        decompiled_end_line=34,
+    )
+
+    result = promote(
+        [
+            candidate(
+                locations=[location],
+                call_chain=[],
+                discovered_by=["asm-index"],
+                source_rules=["bytecode-sql-sink"],
+            )
+        ],
+        not_a_snapshot,
+        program_index=program_index(),
+    )
+
+    assert not result.rejections
+    promoted = result.commands[0].locations[0]
+    assert promoted.origin_kind.value == "decompiled"
+    assert promoted.container_path == CONTAINER
+    assert promoted.entry_path == ENTRY
+    assert promoted.class_name == CLASS_NAME
+    assert promoted.method_name == METHOD_NAME
+    assert promoted.method_descriptor == METHOD_DESCRIPTOR
+    assert promoted.bytecode_offset == BYTECODE_OFFSET
+    assert promoted.decompiled_artifact_id == artifact_id
+    assert (promoted.decompiled_start_line, promoted.decompiled_end_line) == (31, 34)
+    assert promoted.file_path is None
+    assert promoted.start_line is None
+    assert promoted.end_line is None
+    assert promoted.code_snippet is None
+
+
+def test_bytecode_location_requires_a_program_index(tmp_path: Path) -> None:
+    result = promote(
+        [candidate(locations=[bytecode_location()], call_chain=[])],
+        tmp_path / "unused.snapshot",
+    )
+
+    assert not result.commands
+    assert result.rejections[0].reason_code == REASON_PROGRAM_INDEX_REQUIRED
+    assert "ProgramIndexV2" in result.rejections[0].detail
+
+
+@pytest.mark.parametrize(
+    "index_overrides",
+    [
+        {"logical_path": "different.war!/WEB-INF/classes/demo/Action.class"},
+        {"container_path": "different.war"},
+        {"entry_path": "WEB-INF/classes/demo/Other.class"},
+        {"class_name": "demo.OtherAction"},
+        {"method_name": "run"},
+        {"method_descriptor": "()V"},
+        {"bytecode_offset": BYTECODE_OFFSET + 1},
+    ],
+)
+def test_bytecode_location_must_exactly_match_the_program_index(
+    tmp_path: Path,
+    index_overrides: dict[str, object],
+) -> None:
+    result = promote(
+        [candidate(locations=[bytecode_location()], call_chain=[])],
+        tmp_path / "unused.snapshot",
+        program_index=program_index(**index_overrides),
+    )
+
+    assert not result.commands
+    assert (
+        result.rejections[0].reason_code
+        == REASON_LOCATION_NOT_IN_PROGRAM_INDEX
+    )
+    assert "ProgramIndexV2" in result.rejections[0].detail
+
+
+def test_bytecode_source_line_is_preserved_only_when_the_index_substantiates_it(
+    tmp_path: Path,
+) -> None:
+    location = bytecode_location(
+        source_path=SOURCE,
+        start_line=41,
+        end_line=41,
+    )
+    result = promote(
+        [candidate(locations=[location], call_chain=[])],
+        tmp_path / "not-read.snapshot",
+        program_index=program_index(source_line=41),
+    )
+
+    assert not result.rejections
+    promoted = result.commands[0].locations[0]
+    assert promoted.source_path == SOURCE
+    assert (promoted.start_line, promoted.end_line) == (41, 41)
+    assert promoted.code_snippet is None
+
+    mismatched = promote(
+        [
+            candidate(
+                locations=[
+                    bytecode_location(
+                        source_path=SOURCE,
+                        start_line=42,
+                        end_line=42,
+                    )
+                ],
+                call_chain=[],
+            )
+        ],
+        tmp_path / "also-not-read.snapshot",
+        program_index=program_index(source_line=41),
+    )
+    assert not mismatched.commands
+    assert (
+        mismatched.rejections[0].reason_code
+        == REASON_LOCATION_NOT_IN_PROGRAM_INDEX
+    )
+
+
+def test_absent_bytecode_source_line_is_not_synthesized_from_the_index(
+    tmp_path: Path,
+) -> None:
+    result = promote(
+        [candidate(locations=[bytecode_location()], call_chain=[])],
+        tmp_path / "not-read.snapshot",
+        program_index=program_index(source_line=41),
+    )
+
+    promoted = result.commands[0].locations[0]
+    assert promoted.start_line is None
+    assert promoted.end_line is None
+    assert promoted.code_snippet is None
+
+
+def test_mixed_v1_v2_call_chain_is_ordered_and_deduplicated(
+    archive: Path,
+) -> None:
+    binary_sink = bytecode_location()
+    result = promote(
+        [
+            candidate(
+                locations=[binary_sink],
+                call_chain=[
+                    {
+                        "path": SOURCE,
+                        "start_line": 8,
+                        "end_line": 9,
+                        "symbol": "OrderController.list",
+                        "role": "entrypoint",
+                    },
+                    binary_sink,
+                ],
+            )
+        ],
+        archive,
+        program_index=program_index(),
+    )
+
+    assert not result.rejections
+    locations = result.commands[0].locations
+    assert len(locations) == 2
+    assert [location.ordinal for location in locations] == [0, 1]
+    assert [location.origin_kind.value for location in locations] == [
+        "source",
+        "bytecode",
+    ]
+    assert locations[0].code_snippet == "line 8\nline 9"
+    assert locations[1].bytecode_offset == BYTECODE_OFFSET
+    assert locations[1].code_snippet is None
 
 
 # --- what the pipeline refuses -----------------------------------------------

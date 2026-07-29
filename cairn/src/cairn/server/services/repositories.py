@@ -49,14 +49,13 @@ class RepositoryService:
         )
         self.session.add(repository)
         try:
-            self.session.commit()
+            self.session.flush()
         except IntegrityError as exc:
             self.session.rollback()
             raise ConflictError(
                 f"repository name {request.name!r} already exists",
                 error_code="repository_name_conflict",
             ) from exc
-        self.session.refresh(repository)
         return repository
 
     def get(self, repository_id: UUID) -> Repository:
@@ -118,7 +117,7 @@ class RepositoryService:
 
         self.session.delete(repository)
         try:
-            self.session.commit()
+            self.session.flush()
         except IntegrityError as exc:
             self.session.rollback()
             raise ConflictError(

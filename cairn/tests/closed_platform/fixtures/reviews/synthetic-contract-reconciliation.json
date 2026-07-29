@@ -1,0 +1,7 @@
+{
+  "record_id": "record://cairn/cp0/synthetic-contract-reconciliation",
+  "label_status": "provisional",
+  "method": "fixture-contract-reconciliation",
+  "inputs": ["config-first-review.json", "dataflow-first-review.json"],
+  "conclusion": "labels agree on the configuration-to-code path; no human adjudication claimed"
+}

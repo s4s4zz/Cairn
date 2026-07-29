@@ -76,8 +76,7 @@ class DatabaseSecretStore:
             key_version=1,
         )
         self.session.add(secret)
-        self.session.commit()
-        self.session.refresh(secret)
+        self.session.flush()
         return secret
 
     def read(self, reference: str) -> tuple[GitCredentialKind, dict[str, str]]:
@@ -113,7 +112,7 @@ class DatabaseSecretStore:
                 error_code="credential_in_use",
             )
         self.session.delete(secret)
-        self.session.commit()
+        self.session.flush()
 
     def _get(self, reference: str) -> EncryptedSecret:
         secret = (

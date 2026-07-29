@@ -7,6 +7,7 @@ import zipfile
 
 import pytest
 
+from cairn.server.domain.enums import SnapshotInputKind
 from cairn.server.ingestion import (
     IngestionFailure,
     IngestionLimits,
@@ -14,6 +15,17 @@ from cairn.server.ingestion import (
     extract_zip_archive,
     write_snapshot_archive,
 )
+
+
+def _classfile() -> bytes:
+    return bytes.fromhex(
+        "cafebabe0000003d0005"
+        "01000444656d6f"
+        "070001"
+        "0100106a6176612f6c616e672f4f626a656374"
+        "070003"
+        "0021000200040000000000000000"
+    )
 
 
 @pytest.fixture
@@ -140,6 +152,8 @@ def test_normalized_tree_hash_and_tar_ignore_zip_order_and_timestamps(
 
     assert first_tree.content_sha256 == second_tree.content_sha256
     assert first_tree.java_file_count == 1
+    assert first_tree.jvm_artifact_count == 0
+    assert first_tree.input_kind is SnapshotInputKind.SOURCE
     assert first_tree.build_system.value == "maven"
     assert first_tar.read_bytes() == second_tar.read_bytes()
     with tarfile.open(first_tar) as archive:
@@ -152,7 +166,7 @@ def test_normalized_tree_hash_and_tar_ignore_zip_order_and_timestamps(
         assert all(member.mode == 0o444 for member in members)
 
 
-def test_tree_without_java_source_is_rejected(
+def test_tree_without_supported_jvm_input_is_rejected(
     tmp_path,
     limits: IngestionLimits,
 ) -> None:
@@ -163,7 +177,31 @@ def test_tree_without_java_source_is_rejected(
     with pytest.raises(IngestionFailure) as captured:
         collect_snapshot_tree(root, limits)
 
-    assert captured.value.error_code == "NO_JAVA_SOURCE"
+    assert captured.value.error_code == "NO_SUPPORTED_JVM_INPUT"
+
+
+def test_tree_classifies_bytecode_and_hybrid_inputs(
+    tmp_path,
+    limits: IngestionLimits,
+) -> None:
+    classfile = _classfile()
+    bytecode_root = tmp_path / "bytecode"
+    bytecode_root.mkdir()
+    (bytecode_root / "renamed.bin").write_bytes(classfile)
+    hybrid_root = tmp_path / "hybrid"
+    hybrid_root.mkdir()
+    (hybrid_root / "Demo.java").write_text("class Demo {}")
+    (hybrid_root / "Demo.class").write_bytes(classfile)
+
+    bytecode = collect_snapshot_tree(bytecode_root, limits)
+    hybrid = collect_snapshot_tree(hybrid_root, limits)
+
+    assert bytecode.java_file_count == 0
+    assert bytecode.jvm_artifact_count == 1
+    assert bytecode.input_kind is SnapshotInputKind.BYTECODE
+    assert hybrid.java_file_count == 1
+    assert hybrid.jvm_artifact_count == 1
+    assert hybrid.input_kind is SnapshotInputKind.HYBRID
 
 
 def test_tree_rejects_a_live_symbolic_link(

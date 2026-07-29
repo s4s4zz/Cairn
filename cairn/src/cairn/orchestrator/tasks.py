@@ -39,6 +39,18 @@ TASK_SPECS = {
         SandboxTemplateName.ANALYSIS,
         900,
     ),
+    AnalysisOperation.BINARY_INVENTORY: DeterministicTaskSpec(
+        AnalysisOperation.BINARY_INVENTORY,
+        AuditTaskType.INVENTORY,
+        SandboxTemplateName.ANALYSIS,
+        900,
+    ),
+    AnalysisOperation.BYTECODE_INDEX: DeterministicTaskSpec(
+        AnalysisOperation.BYTECODE_INDEX,
+        AuditTaskType.INVENTORY,
+        SandboxTemplateName.ANALYSIS,
+        1_800,
+    ),
     AnalysisOperation.BUILD: DeterministicTaskSpec(
         AnalysisOperation.BUILD,
         AuditTaskType.BUILD,

@@ -81,6 +81,18 @@ class StubTransport:
         return item
 
 
+class StreamCapableTransport(StubTransport):
+    """A real-SDK-shaped transport that makes accidental SSE use fail loudly."""
+
+    def __init__(self, responses: list[object]) -> None:
+        super().__init__(responses)
+        self.stream_called = False
+
+    def stream(self, **payload: object) -> object:
+        self.stream_called = True
+        raise AssertionError("Cairn Gateway does not expose an SSE response contract")
+
+
 def usage(**overrides: int) -> dict[str, int]:
     base = {
         "input_tokens": 100,
@@ -541,6 +553,25 @@ def test_refusal_without_stop_details_still_reports_unavailable() -> None:
 
 
 # -- request shape -----------------------------------------------------------
+
+
+def test_large_output_budget_still_uses_the_gateway_buffered_json_contract() -> None:
+    transport = StreamCapableTransport([assistant_text("Complete.")])
+    client = SemanticModelClient(
+        base_url="http://cairn-llm-gateway:8080",
+        grant_token=GRANT_TOKEN,
+        max_tokens=64_000,
+        transport=transport,
+    )
+
+    response = client.create(
+        system="Review the supplied code.",
+        messages=[{"role": "user", "content": "Begin."}],
+    )
+
+    assert response["stop_reason"] == "end_turn"
+    assert transport.stream_called is False
+    assert transport.requests[0]["max_tokens"] == 64_000
 
 
 def test_request_uses_adaptive_thinking_and_nested_effort_never_budget_tokens() -> None:

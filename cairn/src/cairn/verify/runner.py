@@ -37,6 +37,7 @@ from cairn.verify.contracts import (
 )
 from cairn.verify.prompt import VerifyAssignment
 from cairn.verify.review import IndependentReviewer
+from cairn.model_grants import unverified_grant_model
 
 ASSIGNMENT_FILENAME = "cairn-verify-candidate.json"
 RESULT_FILENAME = "verify-result.json"
@@ -156,6 +157,7 @@ def run(source: Path, scratch: Path, output: Path) -> VerifyResult:
         return _failed(root_cause_key, REASON_ASSIGNMENT_INVALID)
     try:
         grant, gateway_url = take_credentials()
+        model = unverified_grant_model(grant)
     except ValueError:
         return _failed(root_cause_key, REASON_GRANT_MISSING)
     try:
@@ -167,6 +169,7 @@ def run(source: Path, scratch: Path, output: Path) -> VerifyResult:
         client = SemanticModelClient(
             base_url=gateway_url,
             grant_token=grant,
+            model=model,
             max_tokens=_positive_env(MAX_TOKENS_ENV, 16000),
         )
     except (ImportError, ValueError):
@@ -181,6 +184,7 @@ def run(source: Path, scratch: Path, output: Path) -> VerifyResult:
         client,
         broker,
         assignment=assignment,
+        model=model,
         max_turns=_positive_env(MAX_TURNS_ENV, 16),
     )
     return reviewer.run()

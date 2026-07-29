@@ -819,7 +819,7 @@ def test_an_mcp_server_is_refused_before_any_egress(
 def test_an_oversized_body_is_refused_without_being_buffered(
     gateway: tuple[TestClient, RecordingSession, GatewaySettings],
 ) -> None:
-    """This service holds the platform's only long-term model key, and anything
+    """This service holds model-egress key material, and anything
     on the internal analysis network can reach it without a valid grant, so the
     size cap has to bite before the bytes are accepted."""
 

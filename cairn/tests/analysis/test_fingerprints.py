@@ -70,6 +70,28 @@ def location(
     }
 
 
+def bytecode_location(**overrides: object) -> dict[str, object]:
+    result: dict[str, object] = {
+        "origin_kind": "bytecode",
+        "container_path": "sample.war",
+        "entry_path": "WEB-INF/lib/app.jar!/dev/cairn/UserRepository.class",
+        "class_name": "dev.cairn.UserRepository",
+        "method_name": "find",
+        "method_descriptor": "(Ljava/lang/String;)Ljava/lang/String;",
+        "bytecode_offset": 18,
+        "source_path": None,
+        "start_line": None,
+        "end_line": None,
+        "decompiled_artifact_id": None,
+        "decompiled_start_line": None,
+        "decompiled_end_line": None,
+        "symbol": "dev.cairn.UserRepository.find",
+        "role": "sink",
+    }
+    result.update(overrides)
+    return result
+
+
 def step(
     path: str,
     line: int,
@@ -202,6 +224,10 @@ def test_candidate_identity_is_byte_identical_across_calls() -> None:
 
     assert first == second
     assert len(first[0]) == 64 and len(first[1]) == 64
+    assert first == (
+        "1c5c5b3df798707d57c486c43b87b4e62ddcd5da134d6950a13474171e734985",
+        "a8a350de372c502df5201baefd10e4d52081b430c12031af7c50147573a8116e",
+    )
 
 
 def test_root_cause_key_is_tool_agnostic_while_fingerprint_is_not() -> None:
@@ -265,6 +291,83 @@ def test_the_rule_identifier_changes_the_fingerprint_but_not_the_root_cause() ->
 
     assert first[1] == second[1]
     assert first[0] != second[0]
+
+
+def test_v2_identity_ignores_decompiled_presentation_and_bytecode_offset() -> None:
+    shared = {
+        "snapshot_sha256": SNAPSHOT_SHA,
+        "rule_id": "bytecode/sql-injection",
+        "cwe_ids": ["CWE-89"],
+        "category": "sql-injection",
+        "sink": "java.sql.Statement.execute",
+        "tool_name": "asm-index",
+    }
+    first = candidate_identity(
+        **shared,  # type: ignore[arg-type]
+        primary_location=bytecode_location(
+            decompiled_artifact_id="00000000-0000-0000-0000-000000000001",
+            decompiled_start_line=31,
+            decompiled_end_line=34,
+        ),
+    )
+    rerendered = candidate_identity(
+        **shared,  # type: ignore[arg-type]
+        primary_location=bytecode_location(
+            bytecode_offset=27,
+            source_path="src/main/java/dev/cairn/UserRepository.java",
+            start_line=70,
+            end_line=72,
+            decompiled_artifact_id="00000000-0000-0000-0000-000000000002",
+            decompiled_start_line=90,
+            decompiled_end_line=95,
+        ),
+    )
+
+    assert first == rerendered
+
+
+def test_v2_identity_includes_method_name_as_well_as_descriptor() -> None:
+    shared = {
+        "snapshot_sha256": SNAPSHOT_SHA,
+        "rule_id": "bytecode/sql-injection",
+        "cwe_ids": ["CWE-89"],
+        "category": "sql-injection",
+        "sink": "java.sql.Statement.execute",
+        "tool_name": "asm-index",
+    }
+
+    first = candidate_identity(
+        **shared,  # type: ignore[arg-type]
+        primary_location=bytecode_location(method_name="find"),
+    )
+    second = candidate_identity(
+        **shared,  # type: ignore[arg-type]
+        primary_location=bytecode_location(method_name="lookup"),
+    )
+
+    assert first[0] != second[0]
+    assert first[1] != second[1]
+
+
+def test_v2_locations_merge_deterministically_and_validate() -> None:
+    first = candidate(
+        tool="asm-index",
+        rule_id="bytecode/sql-injection",
+        locations=[bytecode_location()],
+    )
+    second = candidate(
+        tool="findsecbugs",
+        rule_id="SQL_INJECTION_JDBC",
+        locations=[bytecode_location()],
+    )
+    assert first["root_cause_key"] == second["root_cause_key"]
+
+    forward = merge_candidates([first, second])[0]
+    reverse = merge_candidates([second, first])[0]
+
+    assert forward == reverse
+    CandidateFinding.model_validate(forward)
+    assert merge_candidates([forward, first])[0] == forward
 
 
 # --- the subproject 5 regression -------------------------------------------

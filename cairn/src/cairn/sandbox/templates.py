@@ -131,6 +131,8 @@ class TemplateRegistry:
                         {
                             SandboxOperation.DEFAULT,
                             SandboxOperation.INVENTORY,
+                            SandboxOperation.BINARY_INVENTORY,
+                            SandboxOperation.BYTECODE_INDEX,
                             SandboxOperation.SEMGREP,
                             SandboxOperation.DEPENDENCY_CHECK,
                             SandboxOperation.TRIVY,

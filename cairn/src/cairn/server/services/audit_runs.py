@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from cairn.server.domain.enums import (
     AuditRunStatus,
     AuditStage,
+    AuditTaskStatus,
     SnapshotStatus,
     SourceUploadStatus,
     SourceType,
@@ -19,8 +20,11 @@ from cairn.server.errors import (
     NotFoundError,
 )
 from cairn.server.persistence.models import (
+    AuditCoverage,
     AuditPolicy,
     AuditRun,
+    AuditTask,
+    Finding,
     Repository,
     SourceSnapshot,
     SourceUpload,
@@ -40,6 +44,17 @@ _TERMINAL_RUN_STATUSES = {
     AuditRunStatus.COMPLETED_WITH_WARNINGS,
     AuditRunStatus.CANCELLED,
     AuditRunStatus.FAILED,
+}
+
+_DELETABLE_RUN_STATUSES = {
+    *_TERMINAL_RUN_STATUSES,
+    AuditRunStatus.HUMAN_REVIEW,
+}
+
+_ACTIVE_TASK_STATUSES = {
+    AuditTaskStatus.QUEUED.value,
+    AuditTaskStatus.CLAIMED.value,
+    AuditTaskStatus.RUNNING.value,
 }
 
 
@@ -132,7 +147,7 @@ class AuditRunService:
         )
         self.session.add(audit_run)
         try:
-            self.session.commit()
+            self.session.flush()
         except IntegrityError as exc:
             self.session.rollback()
             raise ConflictError(
@@ -147,6 +162,78 @@ class AuditRunService:
         if audit_run is None:
             raise NotFoundError("audit_run", run_id)
         return audit_run
+
+    def get_coverage(self, run_id: UUID) -> AuditCoverage:
+        if self.session.get(AuditRun, run_id) is None:
+            raise NotFoundError("audit_run", run_id)
+        coverage = self.session.get(AuditCoverage, run_id)
+        if coverage is None:
+            raise NotFoundError("audit_coverage", run_id)
+        return coverage
+
+    def list_tasks(
+        self,
+        run_id: UUID,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[AuditTask], int]:
+        self.get(run_id)
+        condition = AuditTask.audit_run_id == run_id
+        total = self.session.scalar(
+            select(func.count()).select_from(AuditTask).where(condition)
+        ) or 0
+        tasks = list(
+            self.session.scalars(
+                select(AuditTask)
+                .where(condition)
+                .order_by(AuditTask.created_at, AuditTask.id)
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        return tasks, total
+
+    def event_snapshot(self, run_id: UUID) -> dict[str, object]:
+        """Return one self-contained SSE snapshot for reconnect-safe clients."""
+
+        audit_run = self.get(run_id)
+        task_counts = {
+            str(task_status): int(count)
+            for task_status, count in self.session.execute(
+                select(AuditTask.status, func.count())
+                .where(AuditTask.audit_run_id == run_id)
+                .group_by(AuditTask.status)
+            )
+        }
+        finding_counts = {
+            str(finding_status): int(count)
+            for finding_status, count in self.session.execute(
+                select(Finding.status, func.count())
+                .where(Finding.audit_run_id == run_id)
+                .group_by(Finding.status)
+            )
+        }
+        coverage = self.session.get(AuditCoverage, run_id)
+        return {
+            "audit_run_id": str(audit_run.id),
+            "status": audit_run.status,
+            "current_stage": audit_run.current_stage,
+            "progress": float(audit_run.progress),
+            "warning_count": audit_run.warning_count,
+            "failure_code": audit_run.failure_code,
+            "failure_reason": audit_run.failure_reason,
+            "task_counts": task_counts,
+            "finding_counts": finding_counts,
+            "coverage_warning_count": (
+                len(coverage.coverage_warnings) if coverage is not None else 0
+            ),
+            "completed_at": (
+                audit_run.completed_at.isoformat()
+                if audit_run.completed_at is not None
+                else None
+            ),
+        }
 
     def list(self, filters: AuditRunFilters) -> tuple[list[AuditRun], int]:
         conditions = []
@@ -185,8 +272,105 @@ class AuditRunService:
             current,
             AuditRunStatus.CANCELLING,
         ).value
-        self.session.commit()
+        self.session.flush()
         self.session.refresh(audit_run)
+        return audit_run
+
+    def retry(self, run_id: UUID, actor: str) -> AuditRun:
+        """Start a fresh run over the same source (§11.2).
+
+        A new AuditRun rather than a rewind of the old one. The state machine
+        has no edge out of ``failed`` or ``cancelled`` on purpose: a run is the
+        record of one attempt, and letting an attempt resume after failure
+        would make its findings, coverage and timings describe two different
+        executions at once.
+
+        The retry is pinned to the original's Snapshot when it had one, so
+        "retry" means the same bytes and not whatever the branch points at now.
+        """
+
+        original = self.get(run_id)
+        current = AuditRunStatus(original.status)
+        if current not in {AuditRunStatus.FAILED, AuditRunStatus.CANCELLED}:
+            raise InvalidStateError(
+                f"audit run in {current.value} cannot be retried",
+                error_code="audit_run_not_retryable",
+            )
+        policy = self.session.get(AuditPolicy, original.policy_id)
+        if policy is None:
+            raise NotFoundError("audit_policy", original.policy_id)
+
+        source_request = dict(original.source_request)
+        if original.snapshot_id is not None:
+            snapshot = self._ready_snapshot(
+                original.snapshot_id,
+                repository_id=original.repository_id,
+            )
+            source_request = {
+                "type": "snapshot",
+                "snapshot_id": str(snapshot.id),
+            }
+
+        audit_run = AuditRun(
+            repository_id=original.repository_id,
+            source_request=source_request,
+            snapshot_id=original.snapshot_id,
+            policy_id=original.policy_id,
+            policy_version=original.policy_version,
+            status=AuditRunStatus.CREATED.value,
+            current_stage=None,
+            progress=0,
+            warning_count=0,
+            created_by=actor,
+        )
+        self.session.add(audit_run)
+        self.session.flush()
+        self.session.refresh(audit_run)
+        return audit_run
+
+    def delete(self, run_id: UUID) -> AuditRun:
+        """Delete one settled AuditRun and its run-owned records.
+
+        A running pipeline may still own a live sandbox or a leased task, so
+        deletion is deliberately unavailable until the run reaches a settled
+        status. ``human_review`` is also settled from the worker's perspective:
+        no background task remains and the operator may choose to discard the
+        review set instead of generating a report.
+
+        The pinned SourceSnapshot is retained. It belongs to the Repository,
+        not to this execution, and can safely be reused by another AuditRun.
+        """
+
+        audit_run = self._get_locked(run_id)
+        current = AuditRunStatus(audit_run.status)
+        if current not in _DELETABLE_RUN_STATUSES:
+            raise InvalidStateError(
+                f"audit run in {current.value} must be cancelled before deletion",
+                error_code="audit_run_not_deletable",
+            )
+        active_task = self.session.scalar(
+            select(AuditTask.id)
+            .where(
+                AuditTask.audit_run_id == run_id,
+                AuditTask.status.in_(_ACTIVE_TASK_STATUSES),
+            )
+            .limit(1)
+        )
+        if active_task is not None:
+            raise ConflictError(
+                "audit run still has an active task",
+                error_code="audit_run_has_active_tasks",
+            )
+
+        self.session.delete(audit_run)
+        try:
+            self.session.flush()
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise ConflictError(
+                "audit run data is still referenced",
+                error_code="audit_run_delete_conflict",
+            ) from exc
         return audit_run
 
     def transition(

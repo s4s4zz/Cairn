@@ -47,7 +47,13 @@ class IngestionError(DomainError):
         super().__init__(error_code, message, http_status)
 
 
-def _request_id(request: Request) -> str:
+def ensure_request_id(request: Request) -> str:
+    """The stable per-request identifier every error body and audit row carries.
+
+    Assigned on first use and cached on ``request.state`` so an error response
+    and the audit-log row written by the same request name the same id.
+    """
+
     existing = getattr(request.state, "request_id", None)
     if existing:
         return str(existing)
@@ -64,7 +70,7 @@ def _error_response(
     message: str,
     status_code: int,
 ) -> JSONResponse:
-    request_id = _request_id(request)
+    request_id = ensure_request_id(request)
     body = ErrorResponse(
         error_code=error_code,
         message=message,

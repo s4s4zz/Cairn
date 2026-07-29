@@ -1,0 +1,136 @@
+{
+  "schema_version": "closed-platform-gold-v1",
+  "benchmark_id": "synthetic-contract-cp0-v1",
+  "visibility": "synthetic",
+  "label_status": "provisional",
+  "authorization": {
+    "authorization_ref": "record://cairn/cp0/synthetic-authorization",
+    "scope_sha256": "4a36ab6d78ef1204fe31397d184332f6d94043f7f5fdfd7f7d2090fe9e6afda3",
+    "permits_static_analysis": true,
+    "permits_decompilation": true,
+    "permits_dynamic_execution": true
+  },
+  "annotation_protocol": {
+    "reviewer_refs": [
+      "record://cairn/cp0/config-first-review",
+      "record://cairn/cp0/dataflow-first-review"
+    ],
+    "adjudicator_ref": "record://cairn/cp0/synthetic-contract-reconciliation",
+    "instructions_sha256": "a8d0fd4eb3700ff92a3d7582c9d29b4ffed9cb689a24d7a526873d1de47a0a8e"
+  },
+  "samples": [
+    {
+      "sample_id": "synthetic-enterprise-v1",
+      "artifact": {
+        "sha256": "43621e45c98eff1812f52084ae3cda69ba8b6b85676dc2b1dbf82faacff58a71",
+        "kind": "ear",
+        "artifact_ref": "fixture://closed-platform/synthetic-enterprise-v1",
+        "provenance": {
+          "custody_record_ref": "record://cairn/cp0/synthetic-authorization",
+          "custody_record_sha256": "0211a77d3c407afbf707d98c466f332431b818814396dc741080d14b04185852",
+          "acquisition_record_ref": "record://cairn/cp0/fixture-readme",
+          "acquisition_record_sha256": "8a90af1c80c3b923164316327df952b1581540e75153aa13972cb94393b3a99d"
+        }
+      },
+      "entrypoints": [
+        {
+          "fingerprint": "b9737c725e7bfcd2601055c3fcef3c3272cd85710cb96e7f16fbeefeac896e6a",
+          "evidence": [
+            {
+              "sha256": "2426dd22eb9bfa0ac617cb5066aff80a9be352251f1280bc9ca02087c6cd2570",
+              "evidence_ref": "fixture://closed-platform/web-xml"
+            }
+          ]
+        },
+        {
+          "fingerprint": "417d69009aa0a50186db4dbb8e501e31b05dd4a5c9901ddf9795902e79e0aec0",
+          "evidence": [
+            {
+              "sha256": "a32cb280494ac8e115e4d7176860fc6335da96cf5b3fc09c27376822e2e8eab7",
+              "evidence_ref": "fixture://closed-platform/action-config"
+            }
+          ]
+        },
+        {
+          "fingerprint": "990ab874e300ff2b96c6ba4e5756a1d19c744a2c5522f452875423362e6dd737",
+          "evidence": [
+            {
+              "sha256": "c87b2c378ffeb7e26664ec2cfef5e942a3458f5997a0f568136369964bc0aa88",
+              "evidence_ref": "fixture://closed-platform/lookup-jsp"
+            }
+          ]
+        }
+      ],
+      "findings": [
+        {
+          "fingerprint": "56a293dadf64cec60dafa61bed1887e722c871f6cd8ea8e13a45ecda4df15311",
+          "severity": "high",
+          "required_evidence": [
+            "entrypoint",
+            "input",
+            "guard",
+            "call-chain",
+            "sink"
+          ],
+          "dynamic_reproducible": false,
+          "evidence": [
+            {
+              "sha256": "ac7d0280018a23ef05d95c6186a0990e89f0ffec7379dc65ececeb2ef8b87029",
+              "evidence_ref": "fixture://closed-platform/synthetic-action"
+            },
+            {
+              "sha256": "d1039e0873c5745d6003e7e59226defa9eeb5843c0d499edbcf0c077332e14be",
+              "evidence_ref": "fixture://closed-platform/platform-sql"
+            }
+          ]
+        }
+      ],
+      "coverage_units": [
+        {
+          "fingerprint": "97dc922e5abd7341bff5f00cbf82f7c178a774fbe68e787f6eef849f53c60a74",
+          "evidence": [{"sha256": "4a36ab6d78ef1204fe31397d184332f6d94043f7f5fdfd7f7d2090fe9e6afda3", "evidence_ref": "fixture://closed-platform/fixture-matrix"}]
+        },
+        {
+          "fingerprint": "b03171ebc9abf94a54d90f39a20887bcfd38aa13c47466f2e43e59a70f7feb04",
+          "evidence": [{"sha256": "4a36ab6d78ef1204fe31397d184332f6d94043f7f5fdfd7f7d2090fe9e6afda3", "evidence_ref": "fixture://closed-platform/fixture-matrix"}]
+        },
+        {
+          "fingerprint": "2d3f49c691277638c76ca69e91bd9da1d362146e53bebc38f5d25d85734a99d0",
+          "evidence": [{"sha256": "4a36ab6d78ef1204fe31397d184332f6d94043f7f5fdfd7f7d2090fe9e6afda3", "evidence_ref": "fixture://closed-platform/fixture-matrix"}]
+        },
+        {
+          "fingerprint": "2343b2ee4965d08d26c994eda8c0c84095919f77791786cafda6406307943d1a",
+          "evidence": [{"sha256": "4a36ab6d78ef1204fe31397d184332f6d94043f7f5fdfd7f7d2090fe9e6afda3", "evidence_ref": "fixture://closed-platform/fixture-matrix"}]
+        },
+        {
+          "fingerprint": "336d12343342962f95f1c4ce5c45d1626cfeece7873df35c545676372a5aad1b",
+          "evidence": [{"sha256": "c87b2c378ffeb7e26664ec2cfef5e942a3458f5997a0f568136369964bc0aa88", "evidence_ref": "fixture://closed-platform/lookup-jsp"}]
+        },
+        {
+          "fingerprint": "31273fe7bee241ab9b51cc75fab2ad33baf7627b69902bfdbef6a487b438a26d",
+          "evidence": [{"sha256": "2426dd22eb9bfa0ac617cb5066aff80a9be352251f1280bc9ca02087c6cd2570", "evidence_ref": "fixture://closed-platform/web-xml"}]
+        },
+        {
+          "fingerprint": "2c79cea88d089505292dbaaee398c4aa841400bcacab8710025bbe43533dbf4b",
+          "evidence": [{"sha256": "a32cb280494ac8e115e4d7176860fc6335da96cf5b3fc09c27376822e2e8eab7", "evidence_ref": "fixture://closed-platform/action-config"}]
+        },
+        {
+          "fingerprint": "5ce6ea4156ce42b3941992a764d93371cb0f43cf036c25aa89d32a839adaa0c5",
+          "evidence": [{"sha256": "2c636a6fdbaad1b70fb855b144fe17b5df42e6d8a3bf3b1f3000b00306a77d2a", "evidence_ref": "fixture://closed-platform/platform-request"}]
+        },
+        {
+          "fingerprint": "63eb99132321a9cdaa69623671224d651bf463c4b5760c6b6caeb97ce2e66290",
+          "evidence": [{"sha256": "d1039e0873c5745d6003e7e59226defa9eeb5843c0d499edbcf0c077332e14be", "evidence_ref": "fixture://closed-platform/platform-sql"}]
+        },
+        {
+          "fingerprint": "bbc17342c743bfa5c73375e5f611caec9bfd1bea697bcbd090d9fde615162c29",
+          "evidence": [{"sha256": "511d1094be0ac0c38b6896566914d231a8be637e2dc32e621860c8ac2829bcdc", "evidence_ref": "fixture://closed-platform/authorization-guard"}]
+        },
+        {
+          "fingerprint": "54c2212d04a926392c2d7edc4c60b215f38a1e492d73bdf158fbf6df3db6955f",
+          "evidence": [{"sha256": "d3ac676683ee1736746f0874a1849d246abae24df7c2813081713951ada162cc", "evidence_ref": "fixture://closed-platform/tenant-guard"}]
+        }
+      ]
+    }
+  ]
+}

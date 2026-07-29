@@ -123,6 +123,7 @@ def store_tar(
     manifest: dict[str, object],
     *,
     symlink: bool = False,
+    files: dict[str, bytes] | None = None,
 ) -> SandboxArtifact:
     archive_path = tmp_path / "output.tar"
     encoded = json.dumps(manifest).encode()
@@ -130,6 +131,10 @@ def store_tar(
         info = tarfile.TarInfo("manifest.json")
         info.size = len(encoded)
         archive.addfile(info, BytesIO(encoded))
+        for name, payload in sorted((files or {}).items()):
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, BytesIO(payload))
         if symlink:
             link = tarfile.TarInfo("escape")
             link.type = tarfile.SYMTYPE
@@ -188,6 +193,145 @@ def test_manifest_cannot_reference_absent_raw_result(
         )
 
     assert captured.value.error_code == "ANALYSIS_MANIFEST_INVALID"
+
+
+def test_bytecode_manifest_hydrates_bounded_index_and_candidate_results(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    index = {
+        "contract": "cairn-program-index-v2",
+        "asm_version": "9.8",
+        "target_java_version": 17,
+        "components": [],
+        "resources": [],
+        "classes": [],
+        "methods": [],
+        "fields": [],
+        "calls": [],
+        "field_accesses": [],
+        "decompiled_views": [],
+        "coverage_gaps": [],
+        "classes_total": 0,
+        "classes_parsed": 0,
+    }
+    candidates = {
+        "contract": "cairn-candidate-result-v1",
+        "candidates": [],
+    }
+    manifest = {
+        "contract": "cairn-deterministic-result-v1",
+        "operation": "bytecode-index",
+        "status": "completed",
+        "tool_name": "cairn-bytecode-indexer",
+        "tool_version": "1.0.0+asm-9.8",
+        "reason_code": None,
+        "warnings": [],
+        "raw_result_paths": [
+            "bytecode-candidates.json",
+            "program-index-v2.json",
+        ],
+        "bytecode_index_path": "program-index-v2.json",
+        "bytecode_index_summary": {
+            "contract": "cairn-program-index-summary-v1",
+            "classes_total": 0,
+            "classes_parsed": 0,
+            "component_count": 0,
+            "resource_count": 0,
+            "method_count": 0,
+            "call_count": 0,
+            "field_access_count": 0,
+            "decompiled_view_count": 0,
+            "coverage_gap_count": 0,
+        },
+        "candidates_path": "bytecode-candidates.json",
+        "candidate_count": 0,
+    }
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    task = create_task(db_session)
+    descriptor = store_tar(
+        store,
+        tmp_path,
+        manifest,
+        files={
+            "bytecode-candidates.json": json.dumps(candidates).encode(),
+            "program-index-v2.json": json.dumps(index).encode(),
+        },
+    )
+    registrar = SandboxArtifactRegistrar(db_session, store)
+    artifact = registrar.register(task, descriptor, kind=ArtifactKind.SCAN_RESULT)
+
+    hydrated = registrar.load_manifest(
+        artifact,
+        expected_operation=AnalysisOperation.BYTECODE_INDEX,
+    )
+
+    assert hydrated.bytecode_index is not None
+    assert hydrated.bytecode_index.classes_parsed == 0
+    assert hydrated.candidates == []
+
+
+def test_program_index_summary_mismatch_is_rejected(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    index = {
+        "contract": "cairn-program-index-v2",
+        "asm_version": "9.8",
+        "target_java_version": 17,
+        "components": [],
+        "resources": [],
+        "classes": [],
+        "methods": [],
+        "fields": [],
+        "calls": [],
+        "field_accesses": [],
+        "decompiled_views": [],
+        "coverage_gaps": [],
+        "classes_total": 0,
+        "classes_parsed": 0,
+    }
+    manifest = {
+        "contract": "cairn-deterministic-result-v1",
+        "operation": "bytecode-index",
+        "status": "completed",
+        "tool_name": "cairn-bytecode-indexer",
+        "tool_version": "1.0.0+asm-9.8",
+        "reason_code": None,
+        "warnings": [],
+        "raw_result_paths": ["program-index-v2.json"],
+        "bytecode_index_path": "program-index-v2.json",
+        "bytecode_index_summary": {
+            "contract": "cairn-program-index-summary-v1",
+            "classes_total": 1,
+            "classes_parsed": 0,
+            "component_count": 0,
+            "resource_count": 0,
+            "method_count": 0,
+            "call_count": 0,
+            "field_access_count": 0,
+            "decompiled_view_count": 0,
+            "coverage_gap_count": 0,
+        },
+    }
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    task = create_task(db_session)
+    descriptor = store_tar(
+        store,
+        tmp_path,
+        manifest,
+        files={"program-index-v2.json": json.dumps(index).encode()},
+    )
+    registrar = SandboxArtifactRegistrar(db_session, store)
+    artifact = registrar.register(task, descriptor, kind=ArtifactKind.SCAN_RESULT)
+
+    with pytest.raises(OrchestratorError) as captured:
+        registrar.load_manifest(
+            artifact,
+            expected_operation=AnalysisOperation.BYTECODE_INDEX,
+        )
+
+    assert captured.value.error_code == "PROGRAM_INDEX_RESULT_INVALID"
 
 
 def test_output_tar_is_revalidated_at_orchestrator_boundary(

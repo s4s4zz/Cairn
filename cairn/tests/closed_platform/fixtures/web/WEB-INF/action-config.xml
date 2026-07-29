@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<actions>
+  <action name="syntheticLookup"
+          class="org.cairn.fixture.SyntheticAction"
+          method="execute"
+          permission="fixture:lookup" />
+</actions>

@@ -172,14 +172,14 @@ def decide(
     if blind_verdict is VerificationVerdict.REJECTED:
         corroborations = max(0, discovered_by_count - 1)
         if corroborations == 0 and dynamic_verdict is not VerificationVerdict.CONFIRMED:
-            # One discoverer, one reviewer, and the reviewer disagrees. Nothing
-            # else stands behind this candidate.
+            # The reviewer disagrees with the original severe finding. Every
+            # critical/high Finding still requires a final human disposition.
             return MachineReviewDecision(
-                FindingStatus.REJECTED,
-                RuntimeVerificationStatus.NOT_APPLICABLE,
+                FindingStatus.MACHINE_CONFIRMED,
+                runtime,
                 None,
-                None,
-                False,
+                WARN_CONFLICT,
+                True,
             )
         # Either independent tools also found it, or runtime reproduced it.
         # Both are conflicts the reviewer's rejection does not settle.

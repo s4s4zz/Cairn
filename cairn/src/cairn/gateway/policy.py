@@ -78,6 +78,8 @@ class GatewayPolicy:
         token: str,
         body: dict[str, object],
         body_bytes: int,
+        *,
+        allowed_models: tuple[str, ...] | None = None,
     ) -> ModelGrant:
         """Enforce every request-time policy, in the order that matters.
 
@@ -102,10 +104,8 @@ class GatewayPolicy:
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages:
             raise request_invalid("Request body must carry a non-empty messages list")
-        if (
-            requested_model not in self.settings.model_allowlist
-            or requested_model != grant.model
-        ):
+        effective_allowlist = allowed_models or self.settings.model_allowlist
+        if requested_model not in effective_allowlist or requested_model != grant.model:
             raise model_not_allowed()
         _reject_egress_capabilities(body)
 

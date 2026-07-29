@@ -1,0 +1,7 @@
+{
+  "record_id": "record://cairn/cp0/config-first-review",
+  "label_status": "provisional",
+  "method": "independent-config-first",
+  "inputs": ["web/WEB-INF/web.xml", "web/WEB-INF/action-config.xml", "web/views/lookup.jsp"],
+  "conclusion": "three entrypoints"
+}

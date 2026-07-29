@@ -156,6 +156,8 @@ def _entrypoint_for(
         key=lambda location: (location.role != "entrypoint", location.ordinal),
     )
     for location in ordered:
+        if location.file_path is None:
+            continue
         for record in by_path.get(location.file_path, []):
             if record.get("route"):
                 return record

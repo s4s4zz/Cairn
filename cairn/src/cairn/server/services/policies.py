@@ -43,14 +43,13 @@ class AuditPolicyService:
         )
         self.session.add(policy)
         try:
-            self.session.commit()
+            self.session.flush()
         except IntegrityError as exc:
             self.session.rollback()
             raise ConflictError(
                 f"concurrent policy version creation for {request.name!r}",
                 error_code="policy_version_conflict",
             ) from exc
-        self.session.refresh(policy)
         return policy
 
     def get(self, policy_id: UUID) -> AuditPolicy:

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee" version="6.0">
+  <servlet>
+    <servlet-name>synthetic-action</servlet-name>
+    <servlet-class>org.cairn.fixture.SyntheticAction</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>synthetic-action</servlet-name>
+    <url-pattern>/fixture/lookup</url-pattern>
+  </servlet-mapping>
+</web-app>

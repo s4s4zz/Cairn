@@ -21,6 +21,7 @@ from cairn.server.domain.enums import (
     FindingConfidence,
     FindingSeverity,
     FindingStatus,
+    LocationOriginKind,
     LocationRole,
     ReviewVerdict,
     RuntimeVerificationStatus,
@@ -118,8 +119,56 @@ class FindingLocation(UUIDPrimaryKeyMixin, Base):
     __table_args__ = (
         UniqueConstraint("finding_id", "ordinal", name="finding_ordinal_unique"),
         enum_check("role", LocationRole),
-        CheckConstraint("start_line > 0", name="start_line_positive"),
-        CheckConstraint("end_line >= start_line", name="line_range_valid"),
+        enum_check("origin_kind", LocationOriginKind),
+        CheckConstraint(
+            "(start_line IS NULL AND end_line IS NULL) OR "
+            "(start_line > 0 AND end_line >= start_line)",
+            name="source_line_range_valid",
+        ),
+        CheckConstraint(
+            "(decompiled_start_line IS NULL AND decompiled_end_line IS NULL) OR "
+            "(decompiled_start_line > 0 AND "
+            "decompiled_end_line >= decompiled_start_line)",
+            name="decompiled_line_range_valid",
+        ),
+        CheckConstraint(
+            "bytecode_offset IS NULL OR bytecode_offset >= 0",
+            name="bytecode_offset_nonnegative",
+        ),
+        CheckConstraint(
+            "(method_name IS NULL AND method_descriptor IS NULL) OR "
+            "(method_name IS NOT NULL AND method_descriptor IS NOT NULL)",
+            name="method_identity_complete",
+        ),
+        CheckConstraint(
+            "bytecode_offset IS NULL OR method_name IS NOT NULL",
+            name="bytecode_offset_has_method",
+        ),
+        CheckConstraint(
+            "origin_kind NOT IN ('bytecode', 'decompiled') OR "
+            "(entry_path IS NOT NULL AND class_name IS NOT NULL)",
+            name="bytecode_identity_complete",
+        ),
+        CheckConstraint(
+            "origin_kind != 'source' OR "
+            "(file_path IS NOT NULL AND start_line IS NOT NULL "
+            "AND code_snippet IS NOT NULL)",
+            name="source_evidence_complete",
+        ),
+        CheckConstraint(
+            "origin_kind != 'config' OR "
+            "(file_path IS NOT NULL OR entry_path IS NOT NULL)",
+            name="config_path_present",
+        ),
+        CheckConstraint(
+            "origin_kind != 'decompiled' OR decompiled_artifact_id IS NOT NULL",
+            name="decompiled_artifact_present",
+        ),
+        CheckConstraint(
+            "decompiled_start_line IS NULL OR "
+            "decompiled_artifact_id IS NOT NULL",
+            name="decompiled_lines_have_artifact",
+        ),
         CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
     )
 
@@ -129,15 +178,40 @@ class FindingLocation(UUIDPrimaryKeyMixin, Base):
         index=True,
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
-    file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
-    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    origin_kind: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=LocationOriginKind.SOURCE.value,
+    )
+    file_path: Mapped[str | None] = mapped_column(Text)
+    start_line: Mapped[int | None] = mapped_column(Integer)
+    end_line: Mapped[int | None] = mapped_column(Integer)
     symbol: Mapped[str | None] = mapped_column(Text)
-    code_snippet: Mapped[str] = mapped_column(Text, nullable=False)
+    code_snippet: Mapped[str | None] = mapped_column(Text)
+    container_path: Mapped[str | None] = mapped_column(Text)
+    entry_path: Mapped[str | None] = mapped_column(Text)
+    class_name: Mapped[str | None] = mapped_column(Text)
+    method_name: Mapped[str | None] = mapped_column(Text)
+    method_descriptor: Mapped[str | None] = mapped_column(Text)
+    bytecode_offset: Mapped[int | None] = mapped_column(Integer)
+    decompiled_artifact_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT")
+    )
+    decompiled_start_line: Mapped[int | None] = mapped_column(Integer)
+    decompiled_end_line: Mapped[int | None] = mapped_column(Integer)
     snapshot_sha: Mapped[str] = mapped_column(String(128), nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
 
     finding: Mapped[Finding] = relationship(back_populates="locations")
+    decompiled_artifact: Mapped[Artifact | None] = relationship(
+        foreign_keys=[decompiled_artifact_id]
+    )
+
+    @property
+    def source_path(self) -> str | None:
+        """CodeLocationV2 name for the legacy file_path storage column."""
+
+        return self.file_path
 
 
 class Evidence(UUIDPrimaryKeyMixin, Base):

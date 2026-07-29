@@ -58,6 +58,7 @@ from cairn.server.persistence.models import (
     Finding,
     Verification,
 )
+from cairn.server.schemas.findings import FindingReverifyRequest
 from cairn.server.services.findings import FindingService
 from cairn.verify.contracts import VERIFY_CONTRACT, VERIFY_TOOL_NAME
 
@@ -554,7 +555,7 @@ def test_a_lone_confirmation_reaches_a_human_without_being_confirmed(
     assert "VERIFICATION_SINGLE_CONCLUSION" in warnings_of(db_session, audit_run)
 
 
-def test_a_reasoned_rejection_with_nothing_behind_the_candidate_ends_it(
+def test_a_reasoned_rejection_still_reaches_human_disposition(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
@@ -572,7 +573,8 @@ def test_a_reasoned_rejection_with_nothing_behind_the_candidate_ends_it(
     )
     finding = findings_of(db_session, audit_run)[0]
 
-    assert finding.status == FindingStatus.REJECTED.value
+    assert finding.status == FindingStatus.AWAITING_HUMAN_REVIEW.value
+    assert "VERIFICATION_CONFLICT" in warnings_of(db_session, audit_run)
 
 
 def test_a_rejection_against_corroborating_tools_goes_to_a_human(
@@ -893,3 +895,163 @@ def test_the_review_transcript_is_attached_as_evidence(
         if verification.method == VerificationMethod.INDEPENDENT_AGENT.value
     ]
     assert independent[0].evidence_ids
+
+
+# --- human-requested reverification ------------------------------------------
+
+
+def test_requested_independent_reverification_is_claimed_and_requeues_finding(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    audit_run, sandbox = drive(db_session, tmp_path)
+    finding = findings_of(db_session, audit_run)[0]
+    _finding, review, task = FindingService(db_session).request_reverification(
+        finding.id,
+        FindingReverifyRequest(
+            method="independent_agent",
+            comment="Rebuild the trace with fresh evidence.",
+        ),
+        reviewer_id=uuid4(),
+    )
+    db_session.commit()
+    sandbox.results.append(
+        verify_result(
+            "b" * 64,
+            verdict="rejected",
+            chain_steps=0,
+            defeating_control=f"{REPOSITORY_JAVA}:7 binds the value",
+        )
+    )
+
+    claimed = DeterministicOrchestrator(
+        db_session,
+        settings_for(tmp_path),
+        sandbox.store,
+        sandbox,
+    ).process_next()
+
+    assert claimed == audit_run.id
+    db_session.refresh(finding)
+    db_session.refresh(task)
+    assert audit_run.status == AuditRunStatus.HUMAN_REVIEW.value
+    assert finding.status == FindingStatus.AWAITING_HUMAN_REVIEW.value
+    assert review.verdict == "reverify"
+    assert task.status == AuditTaskStatus.SUCCEEDED.value
+    assert task.attempt == 1
+    assert task.worker_name is not None
+    assert task.worker_name.endswith(":independent-verifier")
+    independent = [
+        item
+        for item in finding.verifications
+        if item.method == VerificationMethod.INDEPENDENT_AGENT.value
+    ]
+    assert len(independent) == 2
+    assert independent[-1].verdict == VerificationVerdict.REJECTED.value
+    assert len(sandbox.verify_requests) == 2
+
+
+def test_unavailable_dynamic_reverification_is_terminal_and_requeues_finding(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    audit_run, sandbox = drive(db_session, tmp_path)
+    finding = findings_of(db_session, audit_run)[0]
+    _finding, _review, task = FindingService(db_session).request_reverification(
+        finding.id,
+        FindingReverifyRequest(
+            method="dynamic_poc",
+            comment="Try the runtime path again.",
+        ),
+        reviewer_id=uuid4(),
+    )
+    db_session.commit()
+
+    claimed = DeterministicOrchestrator(
+        db_session,
+        settings_for(tmp_path),
+        sandbox.store,
+        sandbox,
+    ).process_next()
+
+    assert claimed == audit_run.id
+    db_session.refresh(finding)
+    db_session.refresh(task)
+    assert finding.status == FindingStatus.AWAITING_HUMAN_REVIEW.value
+    assert task.status == AuditTaskStatus.SKIPPED.value
+    assert task.attempt == 1
+    assert task.worker_name is not None
+    assert task.worker_name.endswith(":dynamic-verifier")
+    assert task.error_code == "DYNAMIC_ENVIRONMENT_UNAVAILABLE"
+    dynamic = [
+        item
+        for item in finding.verifications
+        if item.method == VerificationMethod.DYNAMIC_POC.value
+    ]
+    assert len(dynamic) == 2
+    assert dynamic[-1].verdict == VerificationVerdict.INCONCLUSIVE.value
+    assert "DYNAMIC_ENVIRONMENT_UNAVAILABLE" in warnings_of(
+        db_session,
+        audit_run,
+    )
+
+
+def test_reverification_claim_is_durable_before_worker_execution(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audit_run, sandbox = drive(db_session, tmp_path)
+    finding = findings_of(db_session, audit_run)[0]
+    _finding, _review, task = FindingService(db_session).request_reverification(
+        finding.id,
+        FindingReverifyRequest(
+            method="independent_agent",
+            comment="Check that another worker cannot claim this task.",
+        ),
+        reviewer_id=uuid4(),
+    )
+    db_session.commit()
+    observed_task_ids: list[UUID] = []
+
+    def observe_claim(
+        _orchestrator: DeterministicOrchestrator,
+        *_args: object,
+        task_override: AuditTask | None = None,
+        **_kwargs: object,
+    ) -> VerificationVerdict:
+        assert task_override is not None
+        with Session(db_session.get_bind()) as competing_session:
+            persisted = competing_session.get(AuditTask, task.id)
+            assert persisted is not None
+            assert persisted.status == AuditTaskStatus.RUNNING.value
+            assert persisted.attempt == 1
+            assert persisted.worker_name is not None
+            assert persisted.worker_name.endswith(":independent-verifier")
+            competitor = DeterministicOrchestrator(
+                competing_session,
+                settings_for(tmp_path),
+                sandbox.store,
+                sandbox,
+            )
+            assert competitor.process_next() is None
+
+        observed_task_ids.append(task_override.id)
+        task_override.status = AuditTaskStatus.SUCCEEDED.value
+        task_override.finished_at = datetime.now(UTC)
+        return VerificationVerdict.INCONCLUSIVE
+
+    monkeypatch.setattr(DeterministicOrchestrator, "_review_finding", observe_claim)
+
+    claimed = DeterministicOrchestrator(
+        db_session,
+        settings_for(tmp_path),
+        sandbox.store,
+        sandbox,
+    ).process_next()
+
+    assert claimed == audit_run.id
+    assert observed_task_ids == [task.id]
+    db_session.refresh(task)
+    assert task.status == AuditTaskStatus.SUCCEEDED.value
+    assert task.attempt == 1

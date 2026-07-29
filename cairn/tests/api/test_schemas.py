@@ -9,6 +9,7 @@ from cairn.server.domain.enums import (
     DynamicVerificationMode,
     FindingConfidence,
     FindingSeverity,
+    LocationOriginKind,
     LocationRole,
     SourceType,
 )
@@ -145,6 +146,60 @@ def test_candidate_command_forbids_public_state_and_confirmed_confidence() -> No
 def test_candidate_command_requires_at_least_one_location() -> None:
     payload = candidate_payload()
     payload["locations"] = []
+    with pytest.raises(ValidationError):
+        CandidateFindingCommand.model_validate(payload)
+
+
+def test_legacy_candidate_location_defaults_to_source_origin() -> None:
+    command = CandidateFindingCommand.model_validate(candidate_payload())
+
+    location = command.locations[0]
+    assert location.origin_kind is LocationOriginKind.SOURCE
+    assert location.source_path == "src/main/java/Demo.java"
+    assert location.file_path == location.source_path
+
+
+def test_candidate_command_accepts_bytecode_location_without_source_lines() -> None:
+    payload = candidate_payload()
+    payload["locations"] = [
+        {
+            "role": "sink",
+            "origin_kind": "bytecode",
+            "container_path": "sample.war",
+            "entry_path": "WEB-INF/lib/app.jar!/demo/Action.class",
+            "class_name": "demo.Action",
+            "method_name": "execute",
+            "method_descriptor": "(Ljava/lang/String;)V",
+            "bytecode_offset": 18,
+            "snapshot_sha": "b" * 64,
+            "ordinal": 0,
+        }
+    ]
+
+    command = CandidateFindingCommand.model_validate(payload)
+
+    location = command.locations[0]
+    assert location.origin_kind is LocationOriginKind.BYTECODE
+    assert location.file_path is None
+    assert location.start_line is None
+    assert location.code_snippet is None
+    assert location.bytecode_offset == 18
+
+
+def test_candidate_command_rejects_partial_bytecode_method_identity() -> None:
+    payload = candidate_payload()
+    payload["locations"] = [
+        {
+            "role": "sink",
+            "origin_kind": "bytecode",
+            "entry_path": "demo/Action.class",
+            "class_name": "demo.Action",
+            "method_name": "execute",
+            "snapshot_sha": "b" * 64,
+            "ordinal": 0,
+        }
+    ]
+
     with pytest.raises(ValidationError):
         CandidateFindingCommand.model_validate(payload)
 

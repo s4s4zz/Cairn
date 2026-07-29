@@ -6,6 +6,7 @@ import shutil
 from cairn.analysis.contracts import AnalysisManifest
 from cairn.analysis.execution import CommandResult, execute_build
 from cairn.analysis.runner import run_operation
+from cairn.analysis import runner
 from cairn.analysis import tooling
 from cairn.analysis.tooling import run_external_scanner
 from cairn.analysis.tree_hash import source_tree_sha256
@@ -138,6 +139,64 @@ def test_inventory_and_config_runner_results_match_strict_contract(
     parsed_config = AnalysisManifest.model_validate(config)
     assert parsed_config.tool_version == "1.0.0"
     assert len(parsed_config.candidates) == 1
+
+
+def test_bytecode_index_runner_result_matches_strict_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    scratch = tmp_path / "scratch"
+    output = tmp_path / "output"
+    source = tmp_path / "source"
+    scratch.mkdir()
+    output.mkdir()
+    source.mkdir()
+    output.joinpath("asm-index.jsonl").write_text("")
+    output.joinpath("asm-index.log").write_text("")
+
+    class FakeIndex:
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "contract": "cairn-program-index-v2",
+                "asm_version": "9.8",
+                "target_java_version": 17,
+                "components": [],
+                "resources": [],
+                "classes": [],
+                "methods": [],
+                "fields": [],
+                "calls": [],
+                "field_accesses": [],
+                "decompiled_views": [],
+                "coverage_gaps": [],
+                "classes_total": 0,
+                "classes_parsed": 0,
+            }
+
+    monkeypatch.setattr(runner, "build_bytecode_index", lambda *args: FakeIndex())
+    monkeypatch.setattr(runner, "bytecode_sink_candidates", lambda *args, **kwargs: [])
+
+    payload = run_operation(
+        "bytecode-index",
+        source=source,
+        scratch=scratch,
+        output=output,
+    )
+    manifest = AnalysisManifest.model_validate(payload)
+
+    assert manifest.bytecode_index is None
+    assert manifest.bytecode_index_path == "program-index-v2.json"
+    assert manifest.bytecode_index_summary is not None
+    assert manifest.bytecode_index_summary.classes_parsed == 0
+    assert manifest.candidates_path == "bytecode-candidates.json"
+    assert manifest.candidate_count == 0
+    assert manifest.raw_result_paths == [
+        "asm-index.jsonl",
+        "asm-index.log",
+        "bytecode-candidates.json",
+        "program-index-v2.json",
+    ]
 
 
 def test_missing_external_scanner_is_explicitly_unavailable(

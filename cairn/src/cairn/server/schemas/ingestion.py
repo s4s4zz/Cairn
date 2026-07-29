@@ -6,11 +6,12 @@ from pydantic import Field
 
 from cairn.server.domain.enums import (
     BuildSystem,
+    SnapshotInputKind,
     SnapshotStatus,
     SourceType,
     SourceUploadStatus,
 )
-from cairn.server.schemas.common import StrictModel
+from cairn.server.schemas.common import Page, StrictModel
 
 
 class SourceUploadResponse(StrictModel):
@@ -52,8 +53,24 @@ class SourceSnapshotResponse(StrictModel):
     file_count: int
     total_bytes: int
     java_file_count: int
+    jvm_artifact_count: int
+    input_kind: SnapshotInputKind
     java_version: str | None
     build_system: BuildSystem
     status: SnapshotStatus
     failure_code: str | None
     created_at: datetime
+
+
+SourceSnapshotPage = Page[SourceSnapshotResponse]
+
+
+class SnapshotSourceResponse(StrictModel):
+    snapshot_id: UUID
+    snapshot_sha: str
+    path: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=0)
+    total_lines: int = Field(ge=0)
+    content: str
+    truncated: bool

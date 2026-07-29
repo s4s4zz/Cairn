@@ -1,0 +1,31 @@
+{
+  "schema_version": "audit-run-export-v1",
+  "audit_run_id": "synthetic-contract-baseline-001",
+  "sample_sha256": "43621e45c98eff1812f52084ae3cda69ba8b6b85676dc2b1dbf82faacff58a71",
+  "entrypoints": [
+    {"fingerprint": "b9737c725e7bfcd2601055c3fcef3c3272cd85710cb96e7f16fbeefeac896e6a"},
+    {"fingerprint": "417d69009aa0a50186db4dbb8e501e31b05dd4a5c9901ddf9795902e79e0aec0"},
+    {"fingerprint": "990ab874e300ff2b96c6ba4e5756a1d19c744a2c5522f452875423362e6dd737"}
+  ],
+  "findings": [
+    {
+      "fingerprint": "56a293dadf64cec60dafa61bed1887e722c871f6cd8ea8e13a45ecda4df15311",
+      "severity": "high",
+      "evidence": ["entrypoint", "input", "guard", "call-chain", "sink"],
+      "dynamic_reproduced": false
+    }
+  ],
+  "coverage_units": [
+    {"fingerprint": "97dc922e5abd7341bff5f00cbf82f7c178a774fbe68e787f6eef849f53c60a74", "status": "covered"},
+    {"fingerprint": "b03171ebc9abf94a54d90f39a20887bcfd38aa13c47466f2e43e59a70f7feb04", "status": "covered"},
+    {"fingerprint": "2d3f49c691277638c76ca69e91bd9da1d362146e53bebc38f5d25d85734a99d0", "status": "covered"},
+    {"fingerprint": "2343b2ee4965d08d26c994eda8c0c84095919f77791786cafda6406307943d1a", "status": "covered"},
+    {"fingerprint": "336d12343342962f95f1c4ce5c45d1626cfeece7873df35c545676372a5aad1b", "status": "covered"},
+    {"fingerprint": "31273fe7bee241ab9b51cc75fab2ad33baf7627b69902bfdbef6a487b438a26d", "status": "covered"},
+    {"fingerprint": "2c79cea88d089505292dbaaee398c4aa841400bcacab8710025bbe43533dbf4b", "status": "covered"},
+    {"fingerprint": "5ce6ea4156ce42b3941992a764d93371cb0f43cf036c25aa89d32a839adaa0c5", "status": "covered"},
+    {"fingerprint": "63eb99132321a9cdaa69623671224d651bf463c4b5760c6b6caeb97ce2e66290", "status": "covered"},
+    {"fingerprint": "bbc17342c743bfa5c73375e5f611caec9bfd1bea697bcbd090d9fde615162c29", "status": "covered"},
+    {"fingerprint": "54c2212d04a926392c2d7edc4c60b215f38a1e492d73bdf158fbf6df3db6955f", "status": "covered"}
+  ]
+}

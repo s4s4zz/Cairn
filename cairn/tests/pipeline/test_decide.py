@@ -109,11 +109,16 @@ def test_a_lone_confirmation_does_not_raise_confidence() -> None:
     assert decision.enters_human_queue
 
 
-def test_a_rejection_with_nothing_behind_the_candidate_ends_it() -> None:
-    decision = judge(blind=REJECTED, tools=1)
+@pytest.mark.parametrize("dynamic", [INCONCLUSIVE, REJECTED])
+def test_a_rejection_with_nothing_behind_it_still_requires_human_disposition(
+    dynamic: VerificationVerdict,
+) -> None:
+    decision = judge(blind=REJECTED, dynamic=dynamic, tools=1)
 
-    assert decision.status is FindingStatus.REJECTED
-    assert not decision.enters_human_queue
+    assert decision.status is FindingStatus.MACHINE_CONFIRMED
+    assert decision.runtime_verification is RuntimeVerificationStatus.UNVERIFIED
+    assert decision.warning_code == WARN_CONFLICT
+    assert decision.enters_human_queue
 
 
 def test_a_rejection_against_corroborating_tools_goes_to_a_human() -> None:

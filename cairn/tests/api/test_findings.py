@@ -21,6 +21,16 @@ from cairn.server.schemas.findings import CandidateFindingCommand
 from cairn.server.services.findings import FindingService
 
 
+@pytest.fixture(autouse=True)
+def _admin_session(admin_client: TestClient) -> None:
+    """Run this file's tests as an authenticated admin.
+
+    These tests predate §9.8 authentication and cover repository, run, finding
+    and policy behaviour rather than authorisation; the role matrix is checked
+    on its own in test_rbac_matrix.py.
+    """
+
+
 def create_run(client: TestClient) -> dict[str, object]:
     repository_response = client.post(
         "/api/v1/repositories",

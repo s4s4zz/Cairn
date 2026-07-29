@@ -1,6 +1,17 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from cairn.server.schemas.policies import SUPPORTED_SCANNERS
+
+
+@pytest.fixture(autouse=True)
+def _admin_session(admin_client: TestClient) -> None:
+    """Run this file's tests as an authenticated admin.
+
+    These tests predate §9.8 authentication and cover repository, run, finding
+    and policy behaviour rather than authorisation; the role matrix is checked
+    on its own in test_rbac_matrix.py.
+    """
 
 
 def create_policy(

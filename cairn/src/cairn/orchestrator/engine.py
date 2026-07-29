@@ -6,13 +6,14 @@ from pathlib import PurePosixPath
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from cairn.analysis.contracts import (
     AnalysisManifest,
     AnalysisOperation,
     BYTECODE_SCANNERS,
+    ProgramIndexV2,
     ToolStatus,
 )
 from cairn.analysis.fingerprints import merge_candidates
@@ -73,6 +74,7 @@ from cairn.sandbox.contracts import (
 )
 from cairn.sandbox.services import ServiceKind
 from cairn.semantic.client import DEFAULT_MODEL as SEMANTIC_MODEL
+from cairn.model_provider import ModelProviderConfigError, ModelProviderConfigStore
 from cairn.semantic.contracts import SEMANTIC_TOOL_NAME, SemanticReviewResult
 from cairn.semantic.findings import ReviewScope
 from cairn.server.artifacts import ArtifactStore
@@ -82,11 +84,14 @@ from cairn.server.domain.enums import (
     AuditIntentStatus,
     AuditRunStatus,
     AuditTaskStatus,
+    AuditTaskType,
     BuildStatus,
     DynamicVerificationMode,
     EvidenceType,
     FindingSeverity,
     FindingStatus,
+    RuntimeVerificationStatus,
+    SnapshotInputKind,
     VerificationMethod,
     VerificationVerdict,
 )
@@ -183,9 +188,23 @@ class DeterministicOrchestrator:
         self._dynamic_task_id: UUID | None = None
 
     def process_next(self) -> UUID | None:
+        queued_reverification = AuditRun.tasks.any(
+            and_(
+                AuditTask.status == AuditTaskStatus.QUEUED.value,
+                AuditTask.scope_key.like("reverify:%"),
+            )
+        )
         audit_run = self.session.scalar(
             select(AuditRun)
-            .where(AuditRun.status.in_(_ELIGIBLE_STATUSES))
+            .where(
+                or_(
+                    AuditRun.status.in_(_ELIGIBLE_STATUSES),
+                    and_(
+                        AuditRun.status == AuditRunStatus.HUMAN_REVIEW.value,
+                        queued_reverification,
+                    ),
+                )
+            )
             .order_by(AuditRun.created_at, AuditRun.id)
             .with_for_update(skip_locked=True)
             .limit(1)
@@ -235,6 +254,9 @@ class DeterministicOrchestrator:
                 if status is AuditRunStatus.MACHINE_REVIEW:
                     self._machine_review(audit_run)
                     continue
+                if status is AuditRunStatus.HUMAN_REVIEW:
+                    self._human_reverify(audit_run)
+                    return self._run(run_id)
                 return audit_run
         except _RunCancelled:
             return self._run(run_id)
@@ -293,52 +315,89 @@ class DeterministicOrchestrator:
 
     def _preprocess(self, audit_run: AuditRun) -> None:
         coverage = self._coverage(audit_run)
-        inventory_task, inventory, inventory_artifacts = self._execute_profile(
-            audit_run,
-            AnalysisOperation.INVENTORY,
-        )
-        if inventory is None or inventory.status is not ToolStatus.COMPLETED:
+        snapshot = audit_run.snapshot
+        if snapshot is None:
             raise OrchestratorError(
-                inventory.reason_code if inventory else "INVENTORY_FAILED",
-                "Java inventory did not complete",
+                "ORCHESTRATOR_SNAPSHOT_REQUIRED",
+                "A ready Snapshot is required for preprocessing",
             )
-        assert inventory.inventory is not None
-        self._persist_inventory(
-            audit_run,
-            inventory_task,
-            inventory,
-            inventory_artifacts,
-        )
-        data = inventory.inventory
-        coverage.modules_total = len(data.modules)
-        coverage.modules_analyzed = len(data.modules)
-        coverage.java_files_total = data.java_files_total
-        skipped_java = sum(path.lower().endswith(".java") for path in data.skipped_paths)
-        coverage.java_files_analyzed = max(0, data.java_files_total - skipped_java)
-        coverage.entrypoints_total = len(data.entrypoints)
-        coverage.entrypoints_analyzed = 0
-        coverage.sensitive_sinks_total = len(data.sinks)
-        coverage.sensitive_sinks_analyzed = 0
-        coverage.skipped_paths = list(data.skipped_paths)
-        coverage.unsupported_components = list(data.unsupported_components)
+        input_kind = SnapshotInputKind(snapshot.input_kind)
+        has_source = input_kind in {
+            SnapshotInputKind.SOURCE,
+            SnapshotInputKind.HYBRID,
+        }
+        has_bytecode = input_kind in {
+            SnapshotInputKind.BYTECODE,
+            SnapshotInputKind.HYBRID,
+        }
+
+        if has_source:
+            inventory_task, inventory, inventory_artifacts = self._execute_profile(
+                audit_run,
+                AnalysisOperation.INVENTORY,
+            )
+            if inventory is None or inventory.status is not ToolStatus.COMPLETED:
+                raise OrchestratorError(
+                    inventory.reason_code if inventory else "INVENTORY_FAILED",
+                    "Java inventory did not complete",
+                )
+            assert inventory.inventory is not None
+            self._persist_inventory(
+                audit_run,
+                inventory_task,
+                inventory,
+                inventory_artifacts,
+            )
+            data = inventory.inventory
+            coverage.modules_total = len(data.modules)
+            coverage.modules_analyzed = len(data.modules)
+            coverage.java_files_total = data.java_files_total
+            skipped_java = sum(
+                path.lower().endswith(".java") for path in data.skipped_paths
+            )
+            coverage.java_files_analyzed = max(
+                0,
+                data.java_files_total - skipped_java,
+            )
+            coverage.entrypoints_total = len(data.entrypoints)
+            coverage.entrypoints_analyzed = 0
+            coverage.sensitive_sinks_total = len(data.sinks)
+            coverage.sensitive_sinks_analyzed = 0
+            coverage.skipped_paths = list(data.skipped_paths)
+            coverage.unsupported_components = list(data.unsupported_components)
+
+        if has_bytecode:
+            self._preprocess_bytecode(audit_run, coverage)
+
         audit_run.progress = 25
         self.session.commit()
 
-        build_task, build_manifest, build_artifacts = self._execute_profile(
-            audit_run,
-            AnalysisOperation.BUILD,
-        )
-        del build_artifacts
-        if (
-            build_manifest is not None
-            and build_manifest.status is ToolStatus.COMPLETED
-            and build_manifest.build is not None
-        ):
-            coverage.build_status = build_manifest.build.status
-            if build_manifest.build.status != BuildStatus.SUCCESS.value:
+        if has_source:
+            build_task, build_manifest, build_artifacts = self._execute_profile(
+                audit_run,
+                AnalysisOperation.BUILD,
+            )
+            del build_artifacts
+            if (
+                build_manifest is not None
+                and build_manifest.status is ToolStatus.COMPLETED
+                and build_manifest.build is not None
+            ):
+                coverage.build_status = build_manifest.build.status
+                if build_manifest.build.status != BuildStatus.SUCCESS.value:
+                    self._add_warning(
+                        coverage,
+                        "PROJECT_BUILD_FAILED",
+                        tool="build",
+                        task_id=build_task.id,
+                    )
+            else:
+                coverage.build_status = BuildStatus.FAILED.value
                 self._add_warning(
                     coverage,
-                    "PROJECT_BUILD_FAILED",
+                    build_manifest.reason_code
+                    if build_manifest is not None
+                    else build_task.error_code or "BUILD_EXECUTION_FAILED",
                     tool="build",
                     task_id=build_task.id,
                 )
@@ -346,11 +405,9 @@ class DeterministicOrchestrator:
             coverage.build_status = BuildStatus.FAILED.value
             self._add_warning(
                 coverage,
-                build_manifest.reason_code
-                if build_manifest is not None
-                else build_task.error_code or "BUILD_EXECUTION_FAILED",
+                "SOURCE_BUILD_NOT_APPLICABLE",
                 tool="build",
-                task_id=build_task.id,
+                task_id=audit_run.id,
             )
         audit_run.warning_count = len(coverage.coverage_warnings)
         audit_run.progress = 40
@@ -359,6 +416,165 @@ class DeterministicOrchestrator:
             audit_run.id,
             AuditRunStatus.STATIC_SCANNING,
         )
+
+    def _preprocess_bytecode(
+        self,
+        audit_run: AuditRun,
+        coverage: AuditCoverage,
+    ) -> None:
+        inventory_task, inventory_manifest, inventory_artifacts = (
+            self._execute_profile(
+                audit_run,
+                AnalysisOperation.BINARY_INVENTORY,
+            )
+        )
+        if (
+            inventory_manifest is None
+            or inventory_manifest.status is not ToolStatus.COMPLETED
+            or inventory_manifest.binary_inventory is None
+        ):
+            raise OrchestratorError(
+                (
+                    inventory_manifest.reason_code
+                    if inventory_manifest is not None
+                    else "BINARY_INVENTORY_FAILED"
+                ),
+                "Binary inventory did not complete",
+            )
+        inventory = inventory_manifest.binary_inventory
+        completed = dict(coverage.static_tools_completed)
+        completed[AnalysisOperation.BINARY_INVENTORY.value] = self._tool_coverage(
+            inventory_task,
+            status=inventory_manifest.status,
+            version=inventory_manifest.tool_version,
+            artifact_ids=[artifact.id for artifact in inventory_artifacts],
+            reason_code=None,
+            candidate_count=0,
+        )
+        coverage.modules_total += max(1, inventory.archive_count)
+        coverage.modules_analyzed += inventory.archive_count
+        coverage.java_files_total += inventory.selected_class_count
+        skipped = list(coverage.skipped_paths)
+        unsupported = list(coverage.unsupported_components)
+        for gap in inventory.coverage_gaps:
+            skipped.append(gap.logical_path)
+            unsupported.append(gap.model_dump(mode="json"))
+            self._add_warning(
+                coverage,
+                gap.reason_code,
+                tool=AnalysisOperation.BINARY_INVENTORY.value,
+                task_id=inventory_task.id,
+            )
+
+        index_task, index_manifest, index_artifacts = self._execute_profile(
+            audit_run,
+            AnalysisOperation.BYTECODE_INDEX,
+        )
+        if (
+            index_manifest is None
+            or index_manifest.status is not ToolStatus.COMPLETED
+            or index_manifest.bytecode_index is None
+        ):
+            reason_code = (
+                index_manifest.reason_code
+                if index_manifest is not None
+                else index_task.error_code or "BYTECODE_INDEX_FAILED"
+            )
+            completed[AnalysisOperation.BYTECODE_INDEX.value] = self._tool_coverage(
+                index_task,
+                status=(
+                    index_manifest.status
+                    if index_manifest is not None
+                    else ToolStatus.FAILED
+                ),
+                version=(
+                    index_manifest.tool_version
+                    if index_manifest is not None
+                    else None
+                ),
+                artifact_ids=[artifact.id for artifact in index_artifacts],
+                reason_code=reason_code,
+                candidate_count=0,
+            )
+            self._add_warning(
+                coverage,
+                reason_code,
+                tool=AnalysisOperation.BYTECODE_INDEX.value,
+                task_id=index_task.id,
+            )
+            coverage.static_tools_completed = completed
+            coverage.skipped_paths = sorted(set(skipped))
+            coverage.unsupported_components = unsupported
+            return
+
+        index = index_manifest.bytecode_index
+        coverage.java_files_analyzed += index.classes_parsed
+        for gap in index.coverage_gaps:
+            skipped.append(gap.logical_path)
+            unsupported.append(gap.model_dump(mode="json"))
+            self._add_warning(
+                coverage,
+                gap.reason_code,
+                tool=AnalysisOperation.BYTECODE_INDEX.value,
+                task_id=index_task.id,
+            )
+        candidates = [
+            candidate.model_dump(mode="json")
+            for candidate in index_manifest.candidates
+        ]
+        self._attach_decompiled_artifact(candidates, index, index_artifacts)
+        if candidates:
+            self._persist_candidates(
+                audit_run,
+                index_task,
+                candidates,
+                index_artifacts,
+            )
+        coverage.sensitive_sinks_total += len(candidates)
+        completed[AnalysisOperation.BYTECODE_INDEX.value] = self._tool_coverage(
+            index_task,
+            status=index_manifest.status,
+            version=index_manifest.tool_version,
+            artifact_ids=[artifact.id for artifact in index_artifacts],
+            reason_code=None,
+            candidate_count=len(candidates),
+        )
+        coverage.static_tools_completed = completed
+        coverage.skipped_paths = sorted(set(skipped))
+        coverage.unsupported_components = unsupported
+
+    @staticmethod
+    def _attach_decompiled_artifact(
+        candidates: list[dict[str, object]],
+        index: object,
+        artifacts: list[Artifact],
+    ) -> None:
+        if not artifacts:
+            return
+        views = {
+            (view.logical_path, view.class_sha256)
+            for view in index.decompiled_views
+        }
+        eligible = {
+            (record.container_path, record.entry_path, record.class_name)
+            for record in index.classes
+            if (record.logical_path, record.class_sha256) in views
+        }
+        artifact_id = str(artifacts[0].id)
+        for candidate in candidates:
+            locations = candidate.get("locations")
+            if not isinstance(locations, list):
+                continue
+            for location in locations:
+                if not isinstance(location, dict):
+                    continue
+                identity = (
+                    location.get("container_path"),
+                    location.get("entry_path"),
+                    location.get("class_name"),
+                )
+                if identity in eligible:
+                    location["decompiled_artifact_id"] = artifact_id
 
     def _static_scan(self, audit_run: AuditRun) -> None:
         coverage = self._coverage(audit_run)
@@ -773,12 +989,22 @@ class DeterministicOrchestrator:
             if isinstance(annotations, list) and annotations
             else "RequestMapping"
         )
+        source_locations = [
+            location
+            for location in finding.locations
+            if location.file_path is not None
+            and location.start_line is not None
+            and location.end_line is not None
+        ]
+        if not source_locations:
+            raise OrchestratorError(
+                "POC_SOURCE_LOCATION_UNAVAILABLE",
+                "PoC authoring requires a substantiated source location",
+            )
         return PocAssignmentSpec(
             finding_id=str(finding.id),
             module=(
-                PurePosixPath(finding.locations[0].file_path).parts[0]
-                if finding.locations
-                else "."
+                PurePosixPath(source_locations[0].file_path).parts[0]
             ),
             category=finding.category,
             cwe_ids=[finding.cwe_id],
@@ -794,7 +1020,7 @@ class DeterministicOrchestrator:
                     symbol=location.symbol,
                     role=location.role,
                 )
-                for location in finding.locations[:MAX_VERIFY_LOCATIONS]
+                for location in source_locations[:MAX_VERIFY_LOCATIONS]
             ],
         )
 
@@ -856,6 +1082,9 @@ class DeterministicOrchestrator:
         audit_run: AuditRun,
         findings: list[Finding],
         coverage: AuditCoverage,
+        *,
+        task_override: AuditTask | None = None,
+        allow_authored_pocs: bool = True,
     ) -> dict[str, ProbeOutcome]:
         """Stand the application up once and probe every probeable Finding.
 
@@ -905,11 +1134,15 @@ class DeterministicOrchestrator:
         # author runs on the semantic template with no target network; the
         # plans it produces run here, in the same one environment as the
         # deterministic probes.
-        poc_plans = self._author_pocs(audit_run, findings, coverage, budget)
+        poc_plans = (
+            self._author_pocs(audit_run, findings, coverage, budget)
+            if allow_authored_pocs
+            else []
+        )
         if not plan.targets and not poc_plans:
             return {}
 
-        task = get_or_create_dynamic_task(self.session, audit_run)
+        task = task_override or get_or_create_dynamic_task(self.session, audit_run)
         self.session.commit()
         task = self.session.get(AuditTask, task.id)
         assert task is not None
@@ -931,13 +1164,19 @@ class DeterministicOrchestrator:
                 return {}
             return self._outcomes_by_finding(result, coverage, task)
 
-        task.status = AuditTaskStatus.RUNNING.value
-        task.worker_name = f"{self.settings.orchestrator_worker_name}:dynamic-verifier"
-        task.attempt += 1
-        task.started_at = task.started_at or datetime.now(UTC)
-        task.finished_at = None
-        task.error_code = None
-        self.session.commit()
+        if not (
+            task_override is not None
+            and task.status == AuditTaskStatus.RUNNING.value
+        ):
+            task.status = AuditTaskStatus.RUNNING.value
+            task.worker_name = (
+                f"{self.settings.orchestrator_worker_name}:dynamic-verifier"
+            )
+            task.attempt += 1
+            task.started_at = task.started_at or datetime.now(UTC)
+            task.finished_at = None
+            task.error_code = None
+            self.session.commit()
 
         snapshot = self.session.get(SourceSnapshot, audit_run.snapshot_id)
         if snapshot is None:
@@ -1214,6 +1453,7 @@ class DeterministicOrchestrator:
             audit_run_id=audit_run.id,
             archive_path=archive_path,
             snapshot_sha256=snapshot.content_sha256,
+            program_index=self._program_index(audit_run),
         )
         for rejection in result.rejections:
             # A discarded candidate is a coverage gap, not a silent drop.
@@ -1248,6 +1488,29 @@ class DeterministicOrchestrator:
                 )
         self.session.commit()
         return findings
+
+    def _program_index(self, audit_run: AuditRun) -> ProgramIndexV2 | None:
+        task = self.session.scalar(
+            select(AuditTask).where(
+                AuditTask.audit_run_id == audit_run.id,
+                AuditTask.scope_key
+                == TASK_SPECS[AnalysisOperation.BYTECODE_INDEX].scope_key,
+            )
+        )
+        if task is None:
+            return None
+        registrar = SandboxArtifactRegistrar(self.session, self.artifact_store)
+        for artifact in reversed(self._task_artifacts(task)):
+            try:
+                manifest = registrar.load_manifest(
+                    artifact,
+                    expected_operation=AnalysisOperation.BYTECODE_INDEX,
+                )
+            except OrchestratorError:
+                continue
+            if manifest.bytecode_index is not None:
+                return manifest.bytecode_index
+        return None
 
     def _machine_review(self, audit_run: AuditRun) -> None:
         """Run independent blind review and settle each Finding (§7.8, §13.6).
@@ -1352,6 +1615,170 @@ class DeterministicOrchestrator:
             AuditRunStatus.HUMAN_REVIEW,
         )
 
+    def _human_reverify(self, audit_run: AuditRun) -> None:
+        """Execute one human-requested verification and restore the queue.
+
+        A reverify request deliberately leaves the run in ``human_review`` so
+        other findings remain reviewable. The task's ``reverify:`` scope key is
+        the durable signal that lets ``process_next`` claim this otherwise
+        parked run. Whatever the new machine verdict, the human decision is not
+        guessed here: the finding returns through ``machine_confirmed`` to the
+        human queue with the new Verification attached.
+        """
+
+        task = self.session.scalar(
+            select(AuditTask)
+            .where(
+                AuditTask.audit_run_id == audit_run.id,
+                AuditTask.status == AuditTaskStatus.QUEUED.value,
+                AuditTask.scope_key.like("reverify:%"),
+            )
+            .order_by(AuditTask.created_at, AuditTask.id)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if task is None:
+            self.session.rollback()
+            return
+
+        raw_finding_id = task.scope.get("finding_id")
+        try:
+            finding_id = UUID(str(raw_finding_id))
+        except (TypeError, ValueError):
+            self._fail_reverification_task(task, "REVERIFY_SCOPE_INVALID")
+            self.session.commit()
+            return
+
+        finding = self.session.get(Finding, finding_id)
+        if finding is None or finding.audit_run_id != audit_run.id:
+            self._fail_reverification_task(task, "REVERIFY_FINDING_MISSING")
+            self.session.commit()
+            return
+        if finding.status != FindingStatus.VALIDATING.value:
+            self._fail_reverification_task(task, "REVERIFY_FINDING_STATE_INVALID")
+            self.session.commit()
+            return
+
+        if task.type not in {
+            AuditTaskType.INDEPENDENT_VERIFY.value,
+            AuditTaskType.DYNAMIC_VERIFY.value,
+        }:
+            coverage = self._coverage(audit_run)
+            self._fail_reverification_task(task, "REVERIFY_TASK_TYPE_INVALID")
+            self._add_warning(
+                coverage,
+                "REVERIFY_TASK_TYPE_INVALID",
+                tool="reverify",
+                task_id=task.id,
+            )
+            self.session.commit()
+            return
+
+        self._claim_reverification_task(task)
+
+        coverage = self._coverage(audit_run)
+        service = FindingService(self.session)
+        if task.type == AuditTaskType.INDEPENDENT_VERIFY.value:
+            budget = VerificationBudget.from_policy(
+                getattr(
+                    getattr(audit_run, "policy", None),
+                    "verification_budget",
+                    None,
+                )
+            )
+            tools = self._discovered_by_fingerprint(audit_run).get(
+                finding.fingerprint,
+                [finding.discovered_by],
+            )
+            self._review_finding(
+                audit_run,
+                finding,
+                coverage,
+                service,
+                budget,
+                tools,
+                task_override=task,
+            )
+        elif task.type == AuditTaskType.DYNAMIC_VERIFY.value:
+            outcomes = self._run_dynamic_environment(
+                audit_run,
+                [finding],
+                coverage,
+                task_override=task,
+                # Reverification reruns an existing executable plan. Creating a
+                # second model-authored PoC would spawn an unrelated queued task
+                # while the run remains in human_review and strand the gate.
+                allow_authored_pocs=False,
+            )
+            outcome = outcomes.get(str(finding.id))
+            if outcome is None:
+                default_reason, detail = self._dynamic_unavailable_reason(audit_run)
+                reason = task.error_code or default_reason
+                if task.status in {
+                    AuditTaskStatus.QUEUED.value,
+                    AuditTaskStatus.CLAIMED.value,
+                    AuditTaskStatus.RUNNING.value,
+                }:
+                    task.status = AuditTaskStatus.SKIPPED.value
+                    task.error_code = reason
+                    task.finished_at = datetime.now(UTC)
+                self._add_warning(
+                    coverage,
+                    reason,
+                    tool=f"{DYNAMIC_VERIFIER_NAME}:reverify",
+                    task_id=task.id,
+                )
+                service.record_verification(
+                    finding,
+                    method=VerificationMethod.DYNAMIC_POC,
+                    verdict=VerificationVerdict.INCONCLUSIVE,
+                    verifier=DYNAMIC_VERIFIER_NAME,
+                    reasoning=detail,
+                )
+                finding.runtime_verification = (
+                    RuntimeVerificationStatus.UNVERIFIED.value
+                )
+            else:
+                service.record_verification(
+                    finding,
+                    method=VerificationMethod.DYNAMIC_POC,
+                    verdict=VerificationVerdict(outcome.verdict),
+                    verifier=DYNAMIC_VERIFIER_NAME,
+                    reasoning=outcome.detail,
+                )
+                self._record_probe_evidence(finding, outcome, service)
+                finding.runtime_verification = (
+                    RuntimeVerificationStatus.VERIFIED.value
+                    if outcome.verdict == VerificationVerdict.CONFIRMED.value
+                    else RuntimeVerificationStatus.UNVERIFIED.value
+                )
+        service.transition(finding, FindingStatus.MACHINE_CONFIRMED)
+        service.enter_human_queue(finding)
+        audit_run.warning_count = len(coverage.coverage_warnings)
+        self.session.commit()
+
+    def _claim_reverification_task(self, task: AuditTask) -> None:
+        worker_suffix = (
+            "independent-verifier"
+            if task.type == AuditTaskType.INDEPENDENT_VERIFY.value
+            else "dynamic-verifier"
+        )
+        task.status = AuditTaskStatus.RUNNING.value
+        task.worker_name = f"{self.settings.orchestrator_worker_name}:{worker_suffix}"
+        task.attempt += 1
+        task.started_at = task.started_at or datetime.now(UTC)
+        task.finished_at = None
+        task.error_code = None
+        task.error_detail = None
+        # Persist the claim while this transaction still owns the row lock.
+        self.session.commit()
+
+    @staticmethod
+    def _fail_reverification_task(task: AuditTask, error_code: str) -> None:
+        task.status = AuditTaskStatus.FAILED.value
+        task.error_code = error_code
+        task.finished_at = datetime.now(UTC)
+
     def _dynamic_verdict(self, finding: Finding) -> VerificationVerdict:
         """The strongest dynamic verdict on record, defaulting to inconclusive.
 
@@ -1403,6 +1830,8 @@ class DeterministicOrchestrator:
         service: FindingService,
         budget: VerificationBudget,
         tools: list[str],
+        *,
+        task_override: AuditTask | None = None,
     ) -> VerificationVerdict:
         """Run one blind review and record its verdict.
 
@@ -1416,6 +1845,7 @@ class DeterministicOrchestrator:
             audit_run,
             finding,
             budget,
+            task_override=task_override,
         )
         if result is None or result.verdict is None:
             reason = (
@@ -1483,8 +1913,14 @@ class DeterministicOrchestrator:
         audit_run: AuditRun,
         finding: Finding,
         budget: VerificationBudget,
+        *,
+        task_override: AuditTask | None = None,
     ) -> tuple[AuditTask, VerifyResult | None, list[Artifact]]:
-        task = get_or_create_verify_task(self.session, audit_run, finding)
+        task = task_override or get_or_create_verify_task(
+            self.session,
+            audit_run,
+            finding,
+        )
         self.session.commit()
         task = self.session.get(AuditTask, task.id)
         assert task is not None
@@ -1509,17 +1945,23 @@ class DeterministicOrchestrator:
                 return task, None, artifacts
             return task, result, artifacts
 
-        task.status = AuditTaskStatus.RUNNING.value
-        # A distinct worker identity from the semantic stage: §6.10 forbids the
-        # discovering worker from reviewing its own finding, and an identity
-        # shared with the discoverer would make that unenforceable.
-        task.worker_name = f"{self.settings.orchestrator_worker_name}:independent-verifier"
-        task.attempt += 1
-        task.started_at = task.started_at or datetime.now(UTC)
-        task.finished_at = None
-        task.error_code = None
-        task.error_detail = None
-        self.session.commit()
+        if not (
+            task_override is not None
+            and task.status == AuditTaskStatus.RUNNING.value
+        ):
+            task.status = AuditTaskStatus.RUNNING.value
+            # A distinct worker identity from the semantic stage: §6.10 forbids the
+            # discovering worker from reviewing its own finding, and an identity
+            # shared with the discoverer would make that unenforceable.
+            task.worker_name = (
+                f"{self.settings.orchestrator_worker_name}:independent-verifier"
+            )
+            task.attempt += 1
+            task.started_at = task.started_at or datetime.now(UTC)
+            task.finished_at = None
+            task.error_code = None
+            task.error_detail = None
+            self.session.commit()
 
         snapshot = self.session.get(SourceSnapshot, audit_run.snapshot_id)
         if snapshot is None:
@@ -1610,11 +2052,19 @@ class DeterministicOrchestrator:
         reasoning even by accident.
         """
 
-        module = (
-            PurePosixPath(finding.locations[0].file_path).parts[0]
-            if finding.locations
-            else "."
-        )
+        source_locations = [
+            location
+            for location in finding.locations
+            if location.file_path is not None
+            and location.start_line is not None
+            and location.end_line is not None
+        ]
+        if not source_locations:
+            raise OrchestratorError(
+                "VERIFY_SOURCE_LOCATION_UNAVAILABLE",
+                "Independent source review requires a source location",
+            )
+        module = PurePosixPath(source_locations[0].file_path).parts[0]
         return VerifyCandidateSpec(
             root_cause_key=root_cause_key,
             module=module or ".",
@@ -1629,7 +2079,7 @@ class DeterministicOrchestrator:
                     symbol=location.symbol,
                     role=location.role,
                 )
-                for location in finding.locations[:MAX_VERIFY_LOCATIONS]
+                for location in source_locations[:MAX_VERIFY_LOCATIONS]
             ],
         )
 
@@ -1767,7 +2217,7 @@ class DeterministicOrchestrator:
                 audit_run_id=str(audit_run.id),
                 task_id=str(task.id),
                 worker=self.settings.orchestrator_worker_name,
-                model=SEMANTIC_MODEL,
+                model=self._semantic_model(),
                 expires_at=expires_at,
                 # Each turn is one request; the ceiling has to cover the tool
                 # loop plus the final structured answer.
@@ -1777,6 +2227,18 @@ class DeterministicOrchestrator:
             ),
             key,
         )
+
+    def _semantic_model(self) -> str:
+        path = self.settings.llm_provider_config_file
+        if path is None:
+            return SEMANTIC_MODEL
+        try:
+            return ModelProviderConfigStore(path).read_metadata().model
+        except ModelProviderConfigError as exc:
+            raise OrchestratorError(
+                "SEMANTIC_MODEL_CONFIGURATION_UNAVAILABLE",
+                "No active model provider is configured",
+            ) from exc
 
     def _grant_key(self) -> bytes:
         path = self.settings.llm_grant_key_file

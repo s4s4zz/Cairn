@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cairn.invalid/schemas/audit-run-export-v1.schema.json",
+  "title": "Cairn AuditRun benchmark export v1",
+  "x-cairn-runtime-invariants": [
+    "entrypoint, finding, and coverage-unit fingerprints must be unique",
+    "finding evidence values must be unique"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "audit_run_id",
+    "sample_sha256",
+    "entrypoints",
+    "findings",
+    "coverage_units"
+  ],
+  "properties": {
+    "schema_version": {"const": "audit-run-export-v1"},
+    "audit_run_id": {"$ref": "#/$defs/identifier"},
+    "sample_sha256": {"$ref": "#/$defs/sha256"},
+    "entrypoints": {
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/entrypoint"}
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "coverage_units": {
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/coverage_unit"}
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "entrypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint"],
+      "properties": {
+        "fingerprint": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "severity", "evidence", "dynamic_reproduced"],
+      "properties": {
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+        "evidence": {
+          "type": "array",
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["entrypoint", "input", "guard", "call-chain", "sink", "runtime"]
+          }
+        },
+        "dynamic_reproduced": {"type": "boolean"}
+      }
+    },
+    "coverage_unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "status"],
+      "properties": {
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["covered", "gap"]},
+        "reason_code": {
+          "oneOf": [
+            {"$ref": "#/$defs/identifier"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "gap"}}},
+          "then": {"required": ["reason_code"]},
+          "else": {
+            "properties": {"reason_code": {"type": "null"}}
+          }
+        }
+      ]
+    }
+  }
+}

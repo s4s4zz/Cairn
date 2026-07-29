@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cairn.invalid/schemas/benchmark-result-v1.schema.json",
+  "title": "Cairn closed-platform benchmark result v1",
+  "x-cairn-runtime-invariants": [
+    "metric numerator must not exceed denominator",
+    "a positive-denominator metric value must equal numerator divided by denominator rounded to six decimal places"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "benchmark_id",
+    "dataset_visibility",
+    "label_status",
+    "gold_manifest_sha256",
+    "audit_run_export_sha256",
+    "audit_run_id",
+    "sample_sha256",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {"const": "benchmark-result-v1"},
+    "benchmark_id": {"$ref": "#/$defs/identifier"},
+    "dataset_visibility": {"enum": ["synthetic", "private"]},
+    "label_status": {"enum": ["provisional", "human-adjudicated"]},
+    "gold_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "audit_run_export_sha256": {"$ref": "#/$defs/sha256"},
+    "audit_run_id": {"$ref": "#/$defs/identifier"},
+    "sample_sha256": {"$ref": "#/$defs/sha256"},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entrypoint_recall",
+        "critical_high_recall",
+        "precision",
+        "evidence_completeness",
+        "dynamic_reproduction",
+        "coverage_gap"
+      ],
+      "properties": {
+        "entrypoint_recall": {"$ref": "#/$defs/metric"},
+        "critical_high_recall": {"$ref": "#/$defs/metric"},
+        "precision": {"$ref": "#/$defs/metric"},
+        "evidence_completeness": {"$ref": "#/$defs/metric"},
+        "dynamic_reproduction": {"$ref": "#/$defs/metric"},
+        "coverage_gap": {"$ref": "#/$defs/metric"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator", "value"],
+      "properties": {
+        "numerator": {"type": "integer", "minimum": 0},
+        "denominator": {"type": "integer", "minimum": 0},
+        "value": {
+          "oneOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"denominator": {"const": 0}},
+            "required": ["denominator"]
+          },
+          "then": {
+            "properties": {
+              "numerator": {"const": 0},
+              "value": {"type": "null"}
+            }
+          },
+          "else": {"properties": {"value": {"type": "number"}}}
+        }
+      ]
+    }
+  }
+}

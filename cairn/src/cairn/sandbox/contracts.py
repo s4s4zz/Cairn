@@ -54,6 +54,8 @@ class SandboxTemplateName(StrEnum):
 class SandboxOperation(StrEnum):
     DEFAULT = "default"
     INVENTORY = "inventory"
+    BINARY_INVENTORY = "binary-inventory"
+    BYTECODE_INDEX = "bytecode-index"
     BUILD = "build"
     CODEQL = "codeql"
     SEMGREP = "semgrep"

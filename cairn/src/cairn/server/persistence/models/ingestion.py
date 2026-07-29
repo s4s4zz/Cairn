@@ -37,7 +37,7 @@ class SourceUpload(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("ix_source_uploads_status_expires", "status", "expires_at"),
         CheckConstraint(
-            "source_type IN ('zip', 'local_upload')",
+            "source_type IN ('zip', 'local_upload', 'binary_upload')",
             name="source_type_values",
         ),
         enum_check("status", SourceUploadStatus),

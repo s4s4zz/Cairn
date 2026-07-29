@@ -33,6 +33,11 @@ services:
       CAIRN_INGESTION_WORK_ROOT: /var/lib/cairn/ingestion
       CAIRN_GIT_ALLOWED_HOSTS: ${CAIRN_GIT_ALLOWED_HOSTS:-}
       CAIRN_SECRET_KEY_FILE: ${CAIRN_SECRET_KEY_FILE:-/run/secrets/cairn_master_key}
+      CAIRN_LLM_PROVIDER_CONFIG_FILE: /var/lib/cairn/llm/provider.json
+      CAIRN_LLM_PROVIDER_TIMEOUT_SECONDS: ${CAIRN_LLM_PROVIDER_TIMEOUT_SECONDS:-30}
+      # This Compose profile publishes plain HTTP on localhost. HTTPS
+      # deployments must leave the secure default enabled.
+      CAIRN_SESSION_COOKIE_SECURE: "false"
     depends_on:
       cairn-postgres:
         condition: service_healthy
@@ -41,6 +46,13 @@ services:
     volumes:
       - cairn-artifact-data:/var/lib/cairn/artifacts
       - cairn-ingestion-data:/var/lib/cairn/ingestion
+      - type: bind
+        source: ${CAIRN_LLM_CONFIG_HOST_DIR:-/var/lib/cairn/llm}
+        target: /var/lib/cairn/llm
+      - type: bind
+        source: ${CAIRN_SECRET_KEY_HOST_FILE:-/var/lib/cairn/secrets/master-key}
+        target: /run/secrets/cairn_master_key
+        read_only: true
     command:
       - /bin/sh
       - -ec
@@ -83,11 +95,11 @@ services:
       CAIRN_SANDBOX_API_URL: http://cairn-sandbox-manager:8001
       CAIRN_SANDBOX_AUTH_TOKEN_FILE: /run/secrets/cairn_sandbox_token
       # The Orchestrator mints model grants, so it holds the grant signing key.
-      # It deliberately does NOT hold CAIRN_LLM_API_KEY_FILE: the long-term
-      # model credential exists only inside cairn-llm-gateway (design spec
-      # §5.1 / §9.5).
+      # It deliberately holds no provider decryption key or plaintext API key.
+      # It reads only public metadata to bind the selected model into grants.
       CAIRN_LLM_GATEWAY_URL: http://cairn-llm-gateway:8002
       CAIRN_LLM_GRANT_KEY_FILE: /run/secrets/cairn_llm_grant_key
+      CAIRN_LLM_PROVIDER_CONFIG_FILE: /var/lib/cairn/llm/provider.json
     depends_on:
       cairn-server:
         condition: service_healthy
@@ -96,6 +108,10 @@ services:
     volumes:
       - cairn-artifact-data:/var/lib/cairn/artifacts
       - cairn-ingestion-data:/var/lib/cairn/ingestion
+      - type: bind
+        source: ${CAIRN_LLM_CONFIG_HOST_DIR:-/var/lib/cairn/llm}
+        target: /var/lib/cairn/llm
+        read_only: true
       - type: bind
         source: ${CAIRN_SANDBOX_AUTH_TOKEN_HOST_FILE:-/var/lib/cairn/secrets/sandbox-token}
         target: /run/secrets/cairn_sandbox_token
@@ -132,7 +148,10 @@ services:
       CAIRN_SANDBOX_AUTH_TOKEN_FILE: /run/secrets/cairn_sandbox_token
       CAIRN_SANDBOX_ARTIFACT_ROOT: /var/lib/cairn/artifacts
       CAIRN_SANDBOX_STATE_ROOT: /var/lib/cairn/sandbox-state
-      CAIRN_SANDBOX_WORK_ROOT: /var/lib/cairn/sandbox-work
+      # Docker resolves bind sources in the daemon's host namespace, not in
+      # this Manager container. Mount the workspace at the same absolute path
+      # on both sides so a rootless daemon can see every path it is given.
+      CAIRN_SANDBOX_WORK_ROOT: ${CAIRN_SANDBOX_HOST_WORK_ROOT:-/var/lib/cairn/sandbox-work}
       CAIRN_SANDBOX_ANALYSIS_IMAGE: ${CAIRN_SANDBOX_ANALYSIS_IMAGE:-cairn-sandbox-analysis:local}
       CAIRN_SANDBOX_BUILD_IMAGE: ${CAIRN_SANDBOX_BUILD_IMAGE:-cairn-sandbox-build:local}
       CAIRN_SANDBOX_VALIDATION_IMAGE: ${CAIRN_SANDBOX_VALIDATION_IMAGE:-cairn-sandbox-validation:local}
@@ -155,7 +174,7 @@ services:
         target: /run/cairn-rootless-docker.sock
       - type: bind
         source: ${CAIRN_SANDBOX_HOST_WORK_ROOT:-/var/lib/cairn/sandbox-work}
-        target: /var/lib/cairn/sandbox-work
+        target: ${CAIRN_SANDBOX_HOST_WORK_ROOT:-/var/lib/cairn/sandbox-work}
       - type: bind
         source: ${CAIRN_SANDBOX_AUTH_TOKEN_HOST_FILE:-/var/lib/cairn/secrets/sandbox-token}
         target: /run/secrets/cairn_sandbox_token
@@ -197,13 +216,13 @@ services:
       dockerfile: Dockerfile
     image: cairn-audit-api:local
     environment:
-      # The only place in the deployment that holds the long-term model API
-      # key (design spec §5.1 / §9.5). Workers reach it with short-lived
-      # grants signed by the grant key, which the Orchestrator also holds.
-      CAIRN_LLM_API_KEY_FILE: /run/secrets/cairn_llm_api_key
+      # The only inference component that can decrypt the long-term model API
+      # key. Workers reach it with short-lived grants signed by the grant key,
+      # which the Orchestrator also holds. The Admin API can decrypt the same
+      # encrypted configuration only for updates and model enumeration.
       CAIRN_LLM_GRANT_KEY_FILE: /run/secrets/cairn_llm_grant_key
-      CAIRN_LLM_MODEL_ALLOWLIST: ${CAIRN_LLM_MODEL_ALLOWLIST:-claude-opus-5,claude-opus-4-8}
-      CAIRN_LLM_UPSTREAM_BASE_URL: ${CAIRN_LLM_UPSTREAM_BASE_URL:-https://api.anthropic.com}
+      CAIRN_LLM_PROVIDER_CONFIG_FILE: /var/lib/cairn/llm/provider.json
+      CAIRN_LLM_CONFIG_KEY_FILE: /run/secrets/cairn_master_key
       CAIRN_LLM_MAX_REQUEST_BYTES: ${CAIRN_LLM_MAX_REQUEST_BYTES:-4194304}
       CAIRN_LLM_MAX_OUTPUT_TOKENS: ${CAIRN_LLM_MAX_OUTPUT_TOKENS:-32000}
       CAIRN_LLM_REQUEST_TIMEOUT_SECONDS: ${CAIRN_LLM_REQUEST_TIMEOUT_SECONDS:-600}
@@ -212,12 +231,16 @@ services:
       CAIRN_LLM_REFUSAL_FALLBACK: ${CAIRN_LLM_REFUSAL_FALLBACK:-true}
     volumes:
       - type: bind
-        source: ${CAIRN_LLM_API_KEY_HOST_FILE:-/var/lib/cairn/secrets/llm-api-key}
-        target: /run/secrets/cairn_llm_api_key
-        read_only: true
-      - type: bind
         source: ${CAIRN_LLM_GRANT_KEY_HOST_FILE:-/var/lib/cairn/secrets/llm-grant-key}
         target: /run/secrets/cairn_llm_grant_key
+        read_only: true
+      - type: bind
+        source: ${CAIRN_SECRET_KEY_HOST_FILE:-/var/lib/cairn/secrets/master-key}
+        target: /run/secrets/cairn_master_key
+        read_only: true
+      - type: bind
+        source: ${CAIRN_LLM_CONFIG_HOST_DIR:-/var/lib/cairn/llm}
+        target: /var/lib/cairn/llm
         read_only: true
     command:
       - uv

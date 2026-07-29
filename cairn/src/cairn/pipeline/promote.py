@@ -8,12 +8,11 @@ promoted with the unsubstantiated parts quietly dropped.
 
 Two rules carry most of the weight.
 
-**Every location is re-resolved against the Snapshot.** A candidate's line
-numbers were computed inside a sandbox against an extracted copy; here they are
-checked against the Snapshot Artifact the report will cite, and the extracted
-snippet is stored alongside ``snapshot_sha``. A location the Snapshot cannot
-support fails its candidate rather than producing a Finding that points at a
-line nobody can show.
+**Every location is re-resolved against immutable evidence.** Source locations
+are checked against the Snapshot Artifact the report will cite, and their
+snippet is stored alongside ``snapshot_sha``. Bytecode locations are checked
+against the ``ProgramIndexV2`` derived from that Snapshot. Archive members are
+never treated as source text and absent source lines stay absent.
 
 **A candidate with no CWE cannot become a Finding.** ``Finding.cwe_id`` is
 mandatory and the API validates it as ``CWE-<n>``. Inventing one to satisfy the
@@ -24,12 +23,20 @@ so the candidate is rejected and the rejection is recorded.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from uuid import UUID
 
 from pydantic import ValidationError
 
-from cairn.analysis.contracts import CandidateFinding
+from cairn.analysis.contracts import (
+    CallChainStep,
+    CandidateFinding,
+    CandidateLocation,
+    CodeCallChainStepV2,
+    CodeLocationV2,
+    ProgramIndexV2,
+)
 from cairn.pipeline.catalogue import owasp_for, remediation_for
 from cairn.pipeline.snippets import FileText, SnippetUnavailable, read_files
 from cairn.server.domain.enums import (
@@ -45,6 +52,8 @@ from cairn.server.schemas.findings import (
 REASON_NO_CWE = "PIPELINE_NO_CWE"
 REASON_CONTRACT_INVALID = "PIPELINE_CANDIDATE_INVALID"
 REASON_PATH_MISSING = "PIPELINE_LOCATION_NOT_IN_SNAPSHOT"
+REASON_PROGRAM_INDEX_REQUIRED = "PIPELINE_PROGRAM_INDEX_REQUIRED"
+REASON_LOCATION_NOT_IN_PROGRAM_INDEX = "PIPELINE_LOCATION_NOT_IN_PROGRAM_INDEX"
 
 MAX_TITLE_CHARS = 500
 MAX_LOCATIONS = 64
@@ -107,12 +116,132 @@ class PromotionResult:
     rejections: tuple[PromotionRejection, ...]
 
 
+_V1Location = CandidateLocation | CallChainStep
+_V2Location = CodeLocationV2 | CodeCallChainStepV2
+_CandidateLocation = _V1Location | _V2Location
+_ClassKey = tuple[str, str | None, str, str]
+_MethodKey = tuple[str, str | None, str, str, str, str]
+_OffsetKey = tuple[str, str | None, str, str, str, str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgramIndexLocations:
+    """The subset of an index needed to substantiate this promotion batch."""
+
+    classes: frozenset[_ClassKey]
+    methods: dict[_MethodKey, frozenset[tuple[int | None, int | None]]]
+    offsets: dict[_OffsetKey, frozenset[int | None]]
+
+    @classmethod
+    def resolve(
+        cls,
+        index: ProgramIndexV2,
+        candidates: list[CandidateFinding],
+    ) -> "_ProgramIndexLocations":
+        class_wanted: set[_ClassKey] = set()
+        method_wanted: set[_MethodKey] = set()
+        offset_wanted: set[_OffsetKey] = set()
+        for candidate in candidates:
+            for location in (*candidate.call_chain, *candidate.locations):
+                if not _is_binary_location(location):
+                    continue
+                class_key = _class_key(location)
+                class_wanted.add(class_key)
+                method_key = _method_key(location)
+                if method_key is None:
+                    continue
+                method_wanted.add(method_key)
+                if location.bytecode_offset is not None:
+                    offset_wanted.add((*method_key, location.bytecode_offset))
+
+        classes: set[_ClassKey] = set()
+        if class_wanted:
+            for record in index.classes:
+                key = (
+                    record.logical_path,
+                    record.container_path,
+                    record.entry_path,
+                    record.class_name,
+                )
+                if key in class_wanted:
+                    classes.add(key)
+
+        methods: dict[_MethodKey, set[tuple[int | None, int | None]]] = {}
+        if method_wanted:
+            for record in index.methods:
+                key = (
+                    record.logical_path,
+                    record.container_path,
+                    record.entry_path,
+                    record.class_name,
+                    record.method_name,
+                    record.method_descriptor,
+                )
+                if key in method_wanted:
+                    methods.setdefault(key, set()).add(
+                        (record.start_line, record.end_line)
+                    )
+
+        offsets: dict[_OffsetKey, set[int | None]] = {}
+        if offset_wanted:
+            for record in chain(index.calls, index.field_accesses):
+                key = (
+                    record.logical_path,
+                    record.container_path,
+                    record.entry_path,
+                    record.class_name,
+                    record.method_name,
+                    record.method_descriptor,
+                    record.bytecode_offset,
+                )
+                if key in offset_wanted:
+                    offsets.setdefault(key, set()).add(record.source_line)
+
+        return cls(
+            classes=frozenset(classes),
+            methods={key: frozenset(lines) for key, lines in methods.items()},
+            offsets={key: frozenset(lines) for key, lines in offsets.items()},
+        )
+
+    def validate(self, location: _V2Location) -> None:
+        class_key = _class_key(location)
+        if class_key not in self.classes:
+            raise _index_rejection(location, "class identity")
+
+        method_key = _method_key(location)
+        if method_key is None:
+            if location.start_line is not None:
+                raise _index_rejection(location, "class-level source lines")
+            return
+        method_lines = self.methods.get(method_key)
+        if method_lines is None:
+            raise _index_rejection(location, "method identity")
+
+        if location.bytecode_offset is not None:
+            offset_key = (*method_key, location.bytecode_offset)
+            instruction_lines = self.offsets.get(offset_key)
+            if instruction_lines is None:
+                raise _index_rejection(location, "bytecode offset")
+            _validate_source_lines(
+                location,
+                instruction_lines,
+                evidence="indexed instruction",
+            )
+            return
+
+        if location.start_line is not None:
+            claimed = (location.start_line, location.end_line)
+            if claimed not in method_lines:
+                raise _index_rejection(location, "indexed method source lines")
+
+
 def promote_candidates(
     candidates: list[dict[str, object]],
     *,
     audit_run_id: UUID,
     archive_path: Path,
     snapshot_sha256: str,
+    program_index: ProgramIndexV2 | None = None,
 ) -> PromotionResult:
     """Turn merged candidate payloads into Finding creation commands.
 
@@ -134,10 +263,18 @@ def promote_candidates(
             )
     parsed.sort(key=lambda candidate: candidate.fingerprint)
 
+    index_locations = (
+        _ProgramIndexLocations.resolve(program_index, parsed)
+        if program_index is not None
+        else None
+    )
+
     wanted: set[str] = set()
     for candidate in parsed:
-        wanted.update(location.path for location in candidate.locations)
-        wanted.update(step.path for step in candidate.call_chain)
+        for location in (*candidate.call_chain, *candidate.locations):
+            source_path = _snapshot_source_path(location)
+            if source_path is not None:
+                wanted.add(source_path)
     try:
         files = read_files(archive_path, wanted)
     except SnippetUnavailable as exc:
@@ -165,6 +302,7 @@ def promote_candidates(
                     audit_run_id=audit_run_id,
                     files=files,
                     snapshot_sha256=snapshot_sha256,
+                    index_locations=index_locations,
                 )
             )
         except (PipelineRejected, SnippetUnavailable) as exc:
@@ -192,6 +330,7 @@ def _command(
     audit_run_id: UUID,
     files: dict[str, FileText],
     snapshot_sha256: str,
+    index_locations: _ProgramIndexLocations | None,
 ) -> CandidateFindingCommand:
     if not candidate.cwe_ids:
         raise PipelineRejected(
@@ -202,6 +341,7 @@ def _command(
         candidate,
         files=files,
         snapshot_sha256=snapshot_sha256,
+        index_locations=index_locations,
     )
     cwe_id = candidate.cwe_ids[0]
     tools = ", ".join(candidate.discovered_by)
@@ -231,6 +371,7 @@ def _locations(
     *,
     files: dict[str, FileText],
     snapshot_sha256: str,
+    index_locations: _ProgramIndexLocations | None,
 ) -> tuple[list[CommandLocation], int]:
     """Render the call chain first, then any location it does not already cover.
 
@@ -242,54 +383,278 @@ def _locations(
     caller can say so instead of presenting a truncated list as complete.
     """
 
-    ordered: list[tuple[str, str, int, int, str | None]] = []
-    seen: set[tuple[str, str, int, int]] = set()
+    ordered: list[_CandidateLocation] = []
+    seen: set[tuple[object, ...]] = set()
     for step in candidate.call_chain:
-        key = (step.role, step.path, step.start_line, step.end_line)
+        key = _location_key(step)
         if key in seen:
             continue
         seen.add(key)
-        ordered.append(
-            (step.role, step.path, step.start_line, step.end_line, step.symbol)
-        )
+        ordered.append(step)
     for location in candidate.locations:
-        key = (location.role, location.path, location.start_line, location.end_line)
+        key = _location_key(location)
         if key in seen:
             continue
         seen.add(key)
-        ordered.append(
-            (
-                location.role,
-                location.path,
-                location.start_line,
-                location.end_line,
-                location.symbol,
+        ordered.append(location)
+
+    # Validate the complete binary evidence list before applying the display
+    # cap. A bad 65th location must still reject the whole candidate.
+    for location in ordered:
+        if not _is_binary_location(location):
+            continue
+        if index_locations is None:
+            raise PipelineRejected(
+                REASON_PROGRAM_INDEX_REQUIRED,
+                f"{_location_identity(location)} requires ProgramIndexV2 evidence",
             )
-        )
+        index_locations.validate(location)
 
     rendered: list[CommandLocation] = []
-    for ordinal, (role, path, start_line, end_line, symbol) in enumerate(
-        ordered[:MAX_LOCATIONS]
-    ):
-        text = files.get(path)
-        if text is None:
-            raise PipelineRejected(
-                REASON_PATH_MISSING,
-                f"Snapshot does not contain {path}",
-            )
+    for ordinal, location in enumerate(ordered[:MAX_LOCATIONS]):
         rendered.append(
-            CommandLocation(
-                role=LocationRole(role),
-                file_path=path,
-                start_line=start_line,
-                end_line=end_line,
-                symbol=symbol,
-                code_snippet=text.snippet(start_line, end_line),
-                snapshot_sha=snapshot_sha256,
+            _render_location(
+                location,
+                files=files,
+                snapshot_sha256=snapshot_sha256,
                 ordinal=ordinal,
+                index_locations=index_locations,
             )
         )
     return rendered, max(0, len(ordered) - len(rendered))
+
+
+def _render_location(
+    location: _CandidateLocation,
+    *,
+    files: dict[str, FileText],
+    snapshot_sha256: str,
+    ordinal: int,
+    index_locations: _ProgramIndexLocations | None,
+) -> CommandLocation:
+    if not isinstance(location, CodeLocationV2):
+        return _render_source_location(
+            role=location.role,
+            path=location.path,
+            start_line=location.start_line,
+            end_line=location.end_line,
+            symbol=location.symbol,
+            files=files,
+            snapshot_sha256=snapshot_sha256,
+            ordinal=ordinal,
+        )
+
+    if _is_binary_location(location):
+        if index_locations is None:
+            raise PipelineRejected(
+                REASON_PROGRAM_INDEX_REQUIRED,
+                f"{_location_identity(location)} requires ProgramIndexV2 evidence",
+            )
+        index_locations.validate(location)
+        return _render_v2_location(
+            location,
+            code_snippet=None,
+            snapshot_sha=snapshot_sha256,
+            ordinal=ordinal,
+        )
+
+    if location.source_path is not None and location.start_line is not None:
+        text = files.get(location.source_path)
+        if text is None:
+            raise PipelineRejected(
+                REASON_PATH_MISSING,
+                f"Snapshot does not contain {location.source_path}",
+            )
+        return _render_v2_location(
+            location,
+            code_snippet=text.snippet(location.start_line, location.end_line),
+            snapshot_sha=snapshot_sha256,
+            ordinal=ordinal,
+        )
+
+    # Archive-backed config locations carry no source line or snippet. Their
+    # normalized path is already enforced by CodeLocationV2's contract.
+    return _render_v2_location(
+        location,
+        code_snippet=None,
+        snapshot_sha=snapshot_sha256,
+        ordinal=ordinal,
+    )
+
+
+def _render_v2_location(
+    location: _V2Location,
+    *,
+    code_snippet: str | None,
+    snapshot_sha: str,
+    ordinal: int,
+) -> CommandLocation:
+    return CommandLocation(
+        role=LocationRole(location.role),
+        origin_kind=location.origin_kind,
+        file_path=location.source_path,
+        source_path=location.source_path,
+        start_line=location.start_line,
+        end_line=location.end_line,
+        symbol=location.symbol,
+        code_snippet=code_snippet,
+        container_path=location.container_path,
+        entry_path=location.entry_path,
+        class_name=location.class_name,
+        method_name=location.method_name,
+        method_descriptor=location.method_descriptor,
+        bytecode_offset=location.bytecode_offset,
+        decompiled_artifact_id=location.decompiled_artifact_id,
+        decompiled_start_line=location.decompiled_start_line,
+        decompiled_end_line=location.decompiled_end_line,
+        snapshot_sha=snapshot_sha,
+        ordinal=ordinal,
+    )
+
+
+def _render_source_location(
+    *,
+    role: str,
+    path: str,
+    start_line: int,
+    end_line: int,
+    symbol: str | None,
+    files: dict[str, FileText],
+    snapshot_sha256: str,
+    ordinal: int,
+) -> CommandLocation:
+    text = files.get(path)
+    if text is None:
+        raise PipelineRejected(
+            REASON_PATH_MISSING,
+            f"Snapshot does not contain {path}",
+        )
+    return CommandLocation(
+        role=LocationRole(role),
+        file_path=path,
+        source_path=path,
+        start_line=start_line,
+        end_line=end_line,
+        symbol=symbol,
+        code_snippet=text.snippet(start_line, end_line),
+        snapshot_sha=snapshot_sha256,
+        ordinal=ordinal,
+    )
+
+
+def _is_binary_location(location: _CandidateLocation) -> bool:
+    return isinstance(location, CodeLocationV2) and location.origin_kind in {
+        "bytecode",
+        "decompiled",
+    }
+
+
+def _snapshot_source_path(location: _CandidateLocation) -> str | None:
+    if not isinstance(location, CodeLocationV2):
+        return location.path
+    if location.origin_kind == "source":
+        return location.source_path
+    if (
+        location.origin_kind == "config"
+        and location.source_path is not None
+        and location.start_line is not None
+    ):
+        return location.source_path
+    return None
+
+
+def _logical_path(location: _V2Location) -> str:
+    assert location.entry_path is not None  # enforced for binary V2 locations
+    if location.container_path is None:
+        return location.entry_path
+    return f"{location.container_path}!/{location.entry_path}"
+
+
+def _class_key(location: _V2Location) -> _ClassKey:
+    assert location.entry_path is not None  # enforced for binary V2 locations
+    assert location.class_name is not None  # enforced for binary V2 locations
+    return (
+        _logical_path(location),
+        location.container_path,
+        location.entry_path,
+        location.class_name,
+    )
+
+
+def _method_key(location: _V2Location) -> _MethodKey | None:
+    if location.method_name is None:
+        return None
+    assert location.method_descriptor is not None  # contract keeps the pair whole
+    return (*_class_key(location), location.method_name, location.method_descriptor)
+
+
+def _validate_source_lines(
+    location: _V2Location,
+    indexed_lines: frozenset[int | None],
+    *,
+    evidence: str,
+) -> None:
+    if location.start_line is None:
+        return
+    if (
+        location.start_line != location.end_line
+        or location.start_line not in indexed_lines
+    ):
+        raise _index_rejection(location, f"{evidence} source line")
+
+
+def _index_rejection(location: _V2Location, mismatch: str) -> PipelineRejected:
+    return PipelineRejected(
+        REASON_LOCATION_NOT_IN_PROGRAM_INDEX,
+        (
+            f"{_location_identity(location)} does not match its {mismatch} "
+            "in ProgramIndexV2"
+        ),
+    )
+
+
+def _location_identity(location: _V2Location) -> str:
+    identity = f"{_logical_path(location)}::{location.class_name}"
+    if location.method_name is not None:
+        identity += f".{location.method_name}{location.method_descriptor}"
+    if location.bytecode_offset is not None:
+        identity += f"@{location.bytecode_offset}"
+    return identity
+
+
+def _location_key(location: _CandidateLocation) -> tuple[object, ...]:
+    if not isinstance(location, CodeLocationV2):
+        return (
+            "source",
+            location.role,
+            location.path,
+            location.start_line,
+            location.end_line,
+        )
+    if location.origin_kind == "source":
+        return (
+            "source",
+            location.role,
+            location.source_path,
+            location.start_line,
+            location.end_line,
+        )
+    return (
+        location.origin_kind,
+        location.role,
+        location.container_path,
+        location.entry_path,
+        location.class_name,
+        location.method_name,
+        location.method_descriptor,
+        location.bytecode_offset,
+        location.source_path,
+        location.start_line,
+        location.end_line,
+        location.decompiled_artifact_id,
+        location.decompiled_start_line,
+        location.decompiled_end_line,
+    )
 
 
 def _title(candidate: CandidateFinding) -> str:
@@ -297,8 +662,18 @@ def _title(candidate: CandidateFinding) -> str:
         (location for location in candidate.locations if location.role == "sink"),
         candidate.locations[0],
     )
-    subject = primary.symbol or primary.path
+    subject = primary.symbol or _title_subject(primary)
     return f"{_humanize(candidate.category)} in {subject}"[:MAX_TITLE_CHARS]
+
+
+def _title_subject(location: CandidateLocation | CodeLocationV2) -> str:
+    if not isinstance(location, CodeLocationV2):
+        return location.path
+    if location.class_name is not None:
+        if location.method_name is not None:
+            return f"{location.class_name}.{location.method_name}"
+        return location.class_name
+    return location.source_path or location.entry_path or "unknown location"
 
 
 def _description(candidate: CandidateFinding, *, dropped_locations: int) -> str:
@@ -308,8 +683,9 @@ def _description(candidate: CandidateFinding, *, dropped_locations: int) -> str:
     if candidate.call_chain:
         first, last = candidate.call_chain[0], candidate.call_chain[-1]
         parts.append(
-            f"Call chain: {first.symbol} ({first.path}:{first.start_line}) reaches "
-            f"{last.symbol} ({last.path}:{last.start_line}) in "
+            f"Call chain: {_location_subject(first)} "
+            f"({_location_anchor(first)}) reaches {_location_subject(last)} "
+            f"({_location_anchor(last)}) in "
             f"{len(candidate.call_chain)} steps."
         )
     for defense in candidate.existing_defenses[:MAX_DEFENSE_NOTES]:
@@ -326,6 +702,31 @@ def _description(candidate: CandidateFinding, *, dropped_locations: int) -> str:
         )
     parts.append(f"Discovered by: {', '.join(candidate.discovered_by)}.")
     return "\n\n".join(parts)
+
+
+def _location_subject(location: _CandidateLocation) -> str:
+    if location.symbol:
+        return location.symbol
+    if isinstance(location, CodeLocationV2) and location.class_name is not None:
+        if location.method_name is not None:
+            return f"{location.class_name}.{location.method_name}"
+        return location.class_name
+    return _location_anchor(location)
+
+
+def _location_anchor(location: _CandidateLocation) -> str:
+    if not isinstance(location, CodeLocationV2):
+        return f"{location.path}:{location.start_line}"
+    if location.origin_kind in {"bytecode", "decompiled"}:
+        anchor = _logical_path(location)
+        if location.bytecode_offset is not None:
+            anchor += f"@{location.bytecode_offset}"
+        return anchor
+    if location.source_path is not None:
+        if location.start_line is not None:
+            return f"{location.source_path}:{location.start_line}"
+        return location.source_path
+    return location.entry_path or "unknown location"
 
 
 def _discovered_by(candidate: CandidateFinding) -> str:

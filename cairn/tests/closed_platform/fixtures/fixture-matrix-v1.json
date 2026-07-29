@@ -1,0 +1,112 @@
+{
+  "schema_version": "closed-platform-fixture-matrix-v1",
+  "provenance": {
+    "origin": "cairn-project-authored-synthetic",
+    "contains_vendor_code": false,
+    "contains_binaries": false,
+    "contains_decompiled_text": false,
+    "generated_artifacts_must_be_temporary": true
+  },
+  "archive_topology": [
+    {
+      "id": "standalone-class",
+      "kind": "class",
+      "generated_from": [
+        "src/org/cairn/fixture/SyntheticAction.java"
+      ]
+    },
+    {
+      "id": "synthetic-core",
+      "kind": "jar",
+      "generated_from": [
+        "src/org/cairn/fixture/PlatformRequest.java",
+        "src/org/cairn/fixture/PlatformSql.java",
+        "src/org/cairn/fixture/AuthorizationGuard.java",
+        "src/org/cairn/fixture/TenantGuard.java"
+      ]
+    },
+    {
+      "id": "synthetic-web",
+      "kind": "war",
+      "contains": [
+        "WEB-INF/classes/org/cairn/fixture/SyntheticAction.class",
+        "WEB-INF/lib/synthetic-core.jar",
+        "WEB-INF/web.xml",
+        "WEB-INF/action-config.xml",
+        "views/lookup.jsp"
+      ]
+    },
+    {
+      "id": "synthetic-enterprise",
+      "kind": "ear",
+      "contains": [
+        "synthetic-web.war",
+        "lib/synthetic-core.jar"
+      ]
+    },
+    {
+      "id": "nested-library",
+      "kind": "nested-jar",
+      "contains": [
+        "synthetic-web.war!/WEB-INF/lib/synthetic-core.jar"
+      ]
+    }
+  ],
+  "feature_matrix": [
+    {
+      "feature": "nested-jar",
+      "artifact_id": "nested-library",
+      "locator": "synthetic-web.war!/WEB-INF/lib/synthetic-core.jar"
+    },
+    {
+      "feature": "war",
+      "artifact_id": "synthetic-web",
+      "locator": "synthetic-web.war"
+    },
+    {
+      "feature": "ear",
+      "artifact_id": "synthetic-enterprise",
+      "locator": "synthetic-enterprise.ear"
+    },
+    {
+      "feature": "standalone-class",
+      "artifact_id": "standalone-class",
+      "locator": "org/cairn/fixture/SyntheticAction.class"
+    },
+    {
+      "feature": "jsp",
+      "artifact_id": "synthetic-web",
+      "locator": "web/views/lookup.jsp"
+    },
+    {
+      "feature": "web.xml",
+      "artifact_id": "synthetic-web",
+      "locator": "web/WEB-INF/web.xml"
+    },
+    {
+      "feature": "xml-action",
+      "artifact_id": "synthetic-web",
+      "locator": "web/WEB-INF/action-config.xml"
+    },
+    {
+      "feature": "platform-request",
+      "artifact_id": "synthetic-core",
+      "locator": "src/org/cairn/fixture/PlatformRequest.java"
+    },
+    {
+      "feature": "platform-sql",
+      "artifact_id": "synthetic-core",
+      "locator": "src/org/cairn/fixture/PlatformSql.java"
+    },
+    {
+      "feature": "authorization-guard",
+      "artifact_id": "synthetic-core",
+      "locator": "src/org/cairn/fixture/AuthorizationGuard.java"
+    },
+    {
+      "feature": "tenant-guard",
+      "artifact_id": "synthetic-core",
+      "locator": "src/org/cairn/fixture/TenantGuard.java"
+    }
+  ]
+}

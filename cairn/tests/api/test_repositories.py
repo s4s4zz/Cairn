@@ -1,10 +1,21 @@
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from cairn.server.domain.enums import AuditRunStatus
 from cairn.server.persistence.models import AuditRun
+
+
+@pytest.fixture(autouse=True)
+def _admin_session(admin_client: TestClient) -> None:
+    """Run this file's tests as an authenticated admin.
+
+    These tests predate §9.8 authentication and cover repository, run, finding
+    and policy behaviour rather than authorisation; the role matrix is checked
+    on its own in test_rbac_matrix.py.
+    """
 
 
 def create_git_repository(client: TestClient, name: str = "demo") -> dict[str, object]:
@@ -34,7 +45,7 @@ def test_create_and_list_git_repository(client: TestClient) -> None:
     created = create_git_repository(client)
 
     assert UUID(created["id"])
-    assert created["created_by"] == "system"
+    assert created["created_by"] == "admin-user"
     assert created["source_type"] == "git"
 
     response = client.get("/api/v1/repositories")

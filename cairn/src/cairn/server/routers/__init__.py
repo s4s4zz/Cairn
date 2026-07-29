@@ -1,23 +1,31 @@
 from cairn.server.routers import (
     artifacts,
+    audit_logs,
     audit_runs,
+    auth,
     credentials,
     findings,
     health,
+    model_settings,
     policies,
     repositories,
     snapshots,
     uploads,
+    users,
 )
 
 __all__ = [
     "artifacts",
+    "audit_logs",
     "audit_runs",
+    "auth",
     "credentials",
     "findings",
     "health",
+    "model_settings",
     "policies",
     "repositories",
     "snapshots",
     "uploads",
+    "users",
 ]

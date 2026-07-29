@@ -7,7 +7,15 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from cairn.analysis.contracts import AnalysisManifest, AnalysisOperation
+from cairn.analysis.contracts import (
+    AnalysisManifest,
+    AnalysisOperation,
+    BinaryInventoryResult,
+    BinaryInventorySummary,
+    CandidateResult,
+    ProgramIndexSummary,
+    ProgramIndexV2,
+)
 from cairn.sandbox.contracts import SandboxArtifact
 from cairn.semantic.contracts import SemanticReviewResult
 from cairn.dynamic.contracts import DynamicResult
@@ -21,6 +29,9 @@ from cairn.orchestrator.errors import OrchestratorError
 
 _MAX_OUTPUT_ENTRIES = 100_000
 _MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+_MAX_BINARY_INVENTORY_BYTES = 256 * 1024 * 1024
+_MAX_PROGRAM_INDEX_BYTES = 256 * 1024 * 1024
+_MAX_CANDIDATE_RESULT_BYTES = 128 * 1024 * 1024
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024 * 1024
 
 
@@ -110,7 +121,109 @@ class SandboxArtifactRegistrar:
                 "ANALYSIS_MANIFEST_INVALID",
                 "Analysis manifest references a missing raw result",
             )
-        return manifest
+        return self._hydrate_analysis_results(artifact, manifest, seen)
+
+    def _hydrate_analysis_results(
+        self,
+        artifact: Artifact,
+        manifest: AnalysisManifest,
+        seen: set[str],
+    ) -> AnalysisManifest:
+        updates: dict[str, object] = {}
+        if manifest.binary_inventory_path is not None:
+            payload, _ = self._read_output_member(
+                artifact,
+                manifest.binary_inventory_path,
+                missing_code="BINARY_INVENTORY_RESULT_MISSING",
+                invalid_code="BINARY_INVENTORY_RESULT_INVALID",
+                max_member_bytes=_MAX_BINARY_INVENTORY_BYTES,
+            )
+            try:
+                result = BinaryInventoryResult.model_validate_json(payload)
+            except ValidationError as exc:
+                raise OrchestratorError(
+                    "BINARY_INVENTORY_RESULT_INVALID",
+                    "Binary inventory failed contract validation",
+                ) from exc
+            summary = BinaryInventorySummary(
+                contract="cairn-binary-inventory-summary-v1",
+                archive_count=result.archive_count,
+                class_entry_count=result.class_entry_count,
+                selected_class_count=result.selected_class_count,
+                expanded_entry_count=result.expanded_entry_count,
+                expanded_bytes=result.expanded_bytes,
+                coverage_gap_count=len(result.coverage_gaps),
+            )
+            if summary != manifest.binary_inventory_summary:
+                raise OrchestratorError(
+                    "BINARY_INVENTORY_RESULT_INVALID",
+                    "Binary inventory does not match its manifest summary",
+                )
+            updates["binary_inventory"] = result
+
+        if manifest.bytecode_index_path is not None:
+            payload, _ = self._read_output_member(
+                artifact,
+                manifest.bytecode_index_path,
+                missing_code="PROGRAM_INDEX_RESULT_MISSING",
+                invalid_code="PROGRAM_INDEX_RESULT_INVALID",
+                max_member_bytes=_MAX_PROGRAM_INDEX_BYTES,
+            )
+            try:
+                result = ProgramIndexV2.model_validate_json(payload)
+            except ValidationError as exc:
+                raise OrchestratorError(
+                    "PROGRAM_INDEX_RESULT_INVALID",
+                    "Program index failed contract validation",
+                ) from exc
+            summary = ProgramIndexSummary(
+                contract="cairn-program-index-summary-v1",
+                classes_total=result.classes_total,
+                classes_parsed=result.classes_parsed,
+                component_count=len(result.components),
+                resource_count=len(result.resources),
+                method_count=len(result.methods),
+                call_count=len(result.calls),
+                field_access_count=len(result.field_accesses),
+                decompiled_view_count=len(result.decompiled_views),
+                coverage_gap_count=len(result.coverage_gaps),
+            )
+            if summary != manifest.bytecode_index_summary:
+                raise OrchestratorError(
+                    "PROGRAM_INDEX_RESULT_INVALID",
+                    "Program index does not match its manifest summary",
+                )
+            view_paths = {view.artifact_path for view in result.decompiled_views}
+            if not view_paths.issubset(seen):
+                raise OrchestratorError(
+                    "PROGRAM_INDEX_RESULT_INVALID",
+                    "Program index references a missing decompiled view",
+                )
+            updates["bytecode_index"] = result
+
+        if manifest.candidates_path is not None:
+            payload, _ = self._read_output_member(
+                artifact,
+                manifest.candidates_path,
+                missing_code="CANDIDATE_RESULT_MISSING",
+                invalid_code="CANDIDATE_RESULT_INVALID",
+                max_member_bytes=_MAX_CANDIDATE_RESULT_BYTES,
+            )
+            try:
+                result = CandidateResult.model_validate_json(payload)
+            except ValidationError as exc:
+                raise OrchestratorError(
+                    "CANDIDATE_RESULT_INVALID",
+                    "Candidate result failed contract validation",
+                ) from exc
+            if len(result.candidates) != manifest.candidate_count:
+                raise OrchestratorError(
+                    "CANDIDATE_RESULT_INVALID",
+                    "Candidate result does not match its manifest count",
+                )
+            updates["candidates"] = result.candidates
+
+        return manifest.model_copy(update=updates)
 
     def load_semantic_result(
         self,
@@ -239,6 +352,7 @@ class SandboxArtifactRegistrar:
         *,
         missing_code: str,
         invalid_code: str,
+        max_member_bytes: int = _MAX_MANIFEST_BYTES,
     ) -> tuple[bytes, set[str]]:
         try:
             archive_path = self.artifact_store.resolve(
@@ -278,7 +392,7 @@ class SandboxArtifactRegistrar:
                             "Analysis output exceeds the read limit",
                         )
                     if member.name == member_name:
-                        if member.size > _MAX_MANIFEST_BYTES:
+                        if member.size > max_member_bytes:
                             raise OrchestratorError(
                                 invalid_code,
                                 "Sandbox result exceeds the read limit",
@@ -289,7 +403,7 @@ class SandboxArtifactRegistrar:
                                 invalid_code,
                                 "Sandbox result cannot be read",
                             )
-                        found = stream.read(_MAX_MANIFEST_BYTES + 1)
+                        found = stream.read(max_member_bytes + 1)
                 if found is None:
                     raise OrchestratorError(
                         missing_code,

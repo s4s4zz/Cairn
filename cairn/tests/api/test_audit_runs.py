@@ -2,18 +2,36 @@ from uuid import UUID
 
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from cairn.server.auth.audit_log import AuditLogService
 from cairn.server.domain.enums import (
     ArtifactAccessLevel,
     ArtifactKind,
+    AuditLogAction,
     AuditRunStatus,
     BuildSystem,
     SnapshotStatus,
 )
 from cairn.server.errors import InvalidStateError
-from cairn.server.persistence.models import Artifact, AuditRun, SourceSnapshot
+from cairn.server.persistence.models import (
+    Artifact,
+    AuditLogEntry,
+    AuditRun,
+    SourceSnapshot,
+)
 from cairn.server.services.audit_runs import AuditRunService
+
+
+@pytest.fixture(autouse=True)
+def _admin_session(admin_client: TestClient) -> None:
+    """Run this file's tests as an authenticated admin.
+
+    These tests predate §9.8 authentication and cover repository, run, finding
+    and policy behaviour rather than authorisation; the role matrix is checked
+    on its own in test_rbac_matrix.py.
+    """
 
 
 def create_repository(
@@ -220,6 +238,110 @@ def test_cancel_running_run_and_make_repeated_cancel_idempotent(
     cancelled = client.post(f"/api/v1/audit-runs/{run['id']}/cancel")
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    "settled_status",
+    [
+        AuditRunStatus.FAILED,
+        AuditRunStatus.CANCELLED,
+        AuditRunStatus.HUMAN_REVIEW,
+        AuditRunStatus.COMPLETED,
+        AuditRunStatus.COMPLETED_WITH_WARNINGS,
+    ],
+)
+def test_admin_can_delete_a_settled_audit_run_and_keeps_an_audit_log(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    settled_status: AuditRunStatus,
+) -> None:
+    repository = create_repository(client, f"delete-{settled_status.value}")
+    policy = create_policy(client, f"delete-{settled_status.value}-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+    with session_factory.begin() as session:
+        stored = session.get(AuditRun, UUID(run["id"]))
+        assert stored is not None
+        stored.status = settled_status.value
+
+    response = client.delete(f"/api/v1/audit-runs/{run['id']}")
+
+    assert response.status_code == 204
+    assert client.get(f"/api/v1/audit-runs/{run['id']}").status_code == 404
+    with session_factory() as session:
+        entry = session.scalar(
+            select(AuditLogEntry)
+            .where(
+                AuditLogEntry.action == AuditLogAction.AUDIT_RUN_DELETED.value,
+                AuditLogEntry.target_id == run["id"],
+            )
+            .order_by(AuditLogEntry.created_at.desc())
+        )
+        assert entry is not None
+        assert entry.detail["status"] == settled_status.value
+
+
+def test_active_audit_run_must_be_cancelled_before_deletion(
+    client: TestClient,
+) -> None:
+    repository = create_repository(client, "delete-active")
+    policy = create_policy(client, "delete-active-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+
+    response = client.delete(f"/api/v1/audit-runs/{run['id']}")
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "audit_run_not_deletable"
+    assert client.get(f"/api/v1/audit-runs/{run['id']}").status_code == 200
+
+
+def test_run_creation_and_audit_log_roll_back_together(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = create_repository(client, "atomic-create")
+    policy = create_policy(client, "atomic-create-policy")
+
+    def fail_audit(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("audit log unavailable")
+
+    monkeypatch.setattr(AuditLogService, "record", fail_audit)
+    with pytest.raises(RuntimeError, match="audit log unavailable"):
+        create_git_run(client, repository["id"], policy["id"])
+
+    with session_factory() as session:
+        runs = session.scalars(
+            select(AuditRun).where(
+                AuditRun.repository_id == UUID(str(repository["id"]))
+            )
+        ).all()
+        assert runs == []
+
+
+def test_run_cancellation_and_audit_log_roll_back_together(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = create_repository(client, "atomic-cancel")
+    policy = create_policy(client, "atomic-cancel-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+    with session_factory.begin() as session:
+        stored = session.get(AuditRun, UUID(str(run["id"])))
+        assert stored is not None
+        stored.status = AuditRunStatus.STATIC_SCANNING.value
+
+    def fail_audit(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("audit log unavailable")
+
+    monkeypatch.setattr(AuditLogService, "record", fail_audit)
+    with pytest.raises(RuntimeError, match="audit log unavailable"):
+        client.post(f"/api/v1/audit-runs/{run['id']}/cancel")
+
+    with session_factory() as session:
+        stored = session.get(AuditRun, UUID(str(run["id"])))
+        assert stored is not None
+        assert stored.status == AuditRunStatus.STATIC_SCANNING.value
 
 
 def test_public_api_rejects_direct_status_updates(client: TestClient) -> None:

@@ -1,0 +1,7 @@
+{
+  "record_id": "record://cairn/cp0/dataflow-first-review",
+  "label_status": "provisional",
+  "method": "independent-code-first",
+  "inputs": ["src/org/cairn/fixture/SyntheticAction.java", "src/org/cairn/fixture/PlatformSql.java"],
+  "conclusion": "one high-severity SQL injection path"
+}

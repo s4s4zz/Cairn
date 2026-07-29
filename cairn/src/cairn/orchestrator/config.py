@@ -23,8 +23,8 @@ class OrchestratorSettings(ServerSettings):
         max_length=255,
     )
     # The Orchestrator mints the short-lived model grants, so it holds the
-    # grant SIGNING key. It deliberately has no `llm_api_key_file`: the
-    # long-term model credential exists only inside the LLM Gateway (§5.1).
+    # grant SIGNING key. It deliberately has neither the provider decryption
+    # key nor a plaintext API key; only public provider metadata is mounted.
     llm_gateway_url: str = "http://cairn-llm-gateway:8002"
     llm_grant_key_file: Path | None = None
     llm_grant_ttl_margin_seconds: float = Field(default=120.0, ge=10, le=3600)

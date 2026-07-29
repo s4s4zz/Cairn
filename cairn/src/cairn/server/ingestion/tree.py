@@ -9,8 +9,9 @@ import stat
 import tarfile
 import unicodedata
 
-from cairn.server.domain.enums import BuildSystem
+from cairn.server.domain.enums import BuildSystem, SnapshotInputKind
 from cairn.server.ingestion.errors import IngestionFailure
+from cairn.server.ingestion.jvm import detect_jvm_artifact
 from cairn.server.ingestion.limits import IngestionLimits
 
 
@@ -35,6 +36,8 @@ class SnapshotTree:
     file_count: int
     total_bytes: int
     java_file_count: int
+    jvm_artifact_count: int
+    input_kind: SnapshotInputKind
     build_system: BuildSystem
 
 
@@ -159,11 +162,20 @@ def collect_snapshot_tree(root: Path, limits: IngestionLimits) -> SnapshotTree:
     java_file_count = sum(
         item.relative_path.lower().endswith(".java") for item in files
     )
-    if java_file_count == 0:
+    jvm_artifact_count = sum(
+        detect_jvm_artifact(item.source_path, limits) is not None for item in files
+    )
+    if java_file_count == 0 and jvm_artifact_count == 0:
         raise IngestionFailure(
-            "NO_JAVA_SOURCE",
-            "Source tree does not contain any Java source files",
+            "NO_SUPPORTED_JVM_INPUT",
+            "Snapshot does not contain Java source or a supported JVM artifact",
         )
+    if java_file_count and jvm_artifact_count:
+        input_kind = SnapshotInputKind.HYBRID
+    elif jvm_artifact_count:
+        input_kind = SnapshotInputKind.BYTECODE
+    else:
+        input_kind = SnapshotInputKind.SOURCE
 
     digest = hashlib.sha256(_TREE_HASH_HEADER)
     for item in files:
@@ -189,6 +201,8 @@ def collect_snapshot_tree(root: Path, limits: IngestionLimits) -> SnapshotTree:
         file_count=len(files),
         total_bytes=total_bytes,
         java_file_count=java_file_count,
+        jvm_artifact_count=jvm_artifact_count,
+        input_kind=input_kind,
         build_system=build_system,
     )
 

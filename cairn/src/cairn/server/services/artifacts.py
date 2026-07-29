@@ -18,7 +18,7 @@ class ArtifactService:
         self.session = session
         self.artifact_store = artifact_store
 
-    def resolve(self, artifact_id: UUID) -> tuple[Artifact, Path]:
+    def get(self, artifact_id: UUID) -> Artifact:
         artifact = self.session.get(Artifact, artifact_id)
         if artifact is None:
             raise NotFoundError("artifact", artifact_id)
@@ -28,6 +28,9 @@ class ArtifactService:
                 f"artifact {artifact_id} has expired",
                 410,
             )
+        return artifact
+
+    def resolve_bytes(self, artifact: Artifact) -> Path:
         try:
             path = self.artifact_store.resolve(
                 artifact.storage_key,
@@ -35,11 +38,15 @@ class ArtifactService:
                 expected_size=artifact.size_bytes,
             )
         except ArtifactNotFoundError as exc:
-            raise NotFoundError("artifact_bytes", artifact_id) from exc
+            raise NotFoundError("artifact_bytes", artifact.id) from exc
         except ArtifactIntegrityError as exc:
             raise DomainError(
                 "artifact_integrity_failure",
                 "artifact bytes failed integrity verification",
                 500,
             ) from exc
-        return artifact, path
+        return path
+
+    def resolve(self, artifact_id: UUID) -> tuple[Artifact, Path]:
+        artifact = self.get(artifact_id)
+        return artifact, self.resolve_bytes(artifact)

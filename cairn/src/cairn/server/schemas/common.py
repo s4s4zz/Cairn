@@ -20,7 +20,7 @@ class ErrorResponse(StrictModel):
 
 
 class PageMeta(StrictModel):
-    limit: int = Field(ge=1, le=100)
+    limit: int = Field(ge=1, le=500)
     offset: int = Field(ge=0)
     total: int = Field(ge=0)
 

@@ -16,6 +16,7 @@ from cairn.server.domain.enums import (
     FindingSeverity,
     FindingStatus,
     RuntimeVerificationStatus,
+    SnapshotInputKind,
     SnapshotStatus,
     SourceType,
 )
@@ -56,6 +57,9 @@ EXPECTED_TABLES = {
     "audit_intent_sources",
     "encrypted_secrets",
     "source_uploads",
+    "users",
+    "user_sessions",
+    "audit_log_entries",
 }
 
 
@@ -97,6 +101,26 @@ def test_model_columns_match_core_contract() -> None:
         constraint.name == "uq_artifacts_storage_key"
         for constraint in Base.metadata.tables["artifacts"].constraints
     )
+    location_table = Base.metadata.tables["finding_locations"]
+    assert {
+        "origin_kind",
+        "container_path",
+        "entry_path",
+        "class_name",
+        "method_name",
+        "method_descriptor",
+        "bytecode_offset",
+        "decompiled_artifact_id",
+        "decompiled_start_line",
+        "decompiled_end_line",
+    } <= set(location_table.columns.keys())
+    assert location_table.c.file_path.nullable is True
+    assert location_table.c.start_line.nullable is True
+    assert location_table.c.end_line.nullable is True
+    assert location_table.c.code_snippet.nullable is True
+    decompiled_fk = next(iter(location_table.c.decompiled_artifact_id.foreign_keys))
+    assert decompiled_fk.target_fullname == "artifacts.id"
+    assert decompiled_fk.ondelete == "RESTRICT"
 
 
 def test_run_owned_foreign_keys_cascade_and_snapshot_reference_is_restricted() -> None:
@@ -245,6 +269,8 @@ def test_ready_source_snapshot_is_immutable() -> None:
             file_count=1,
             total_bytes=10,
             java_file_count=1,
+            jvm_artifact_count=0,
+            input_kind=SnapshotInputKind.SOURCE.value,
             build_system=BuildSystem.MAVEN.value,
             status=SnapshotStatus.READY.value,
         )

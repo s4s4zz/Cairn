@@ -29,6 +29,7 @@ from cairn.server.domain.enums import (
     AuditTaskType,
     BuildSystem,
     DynamicVerificationMode,
+    SnapshotInputKind,
     SnapshotStatus,
     SourceType,
 )
@@ -74,10 +75,15 @@ class SourceSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("ix_source_snapshots_content_sha256", "content_sha256"),
         enum_check("build_system", BuildSystem),
+        enum_check("input_kind", SnapshotInputKind),
         enum_check("status", SnapshotStatus),
         CheckConstraint("file_count >= 0", name="file_count_nonnegative"),
         CheckConstraint("total_bytes >= 0", name="total_bytes_nonnegative"),
         CheckConstraint("java_file_count >= 0", name="java_file_count_nonnegative"),
+        CheckConstraint(
+            "jvm_artifact_count >= 0",
+            name="jvm_artifact_count_nonnegative",
+        ),
     )
 
     repository_id: Mapped[UUID] = mapped_column(
@@ -96,6 +102,16 @@ class SourceSnapshot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     java_file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    jvm_artifact_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+    input_kind: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=SnapshotInputKind.SOURCE.value,
+    )
     java_version: Mapped[str | None] = mapped_column(String(64))
     build_system: Mapped[str] = mapped_column(
         String(16),

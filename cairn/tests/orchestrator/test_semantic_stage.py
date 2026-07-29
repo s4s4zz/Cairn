@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from cairn.analysis.contracts import ToolStatus
 from cairn.gateway.tokens import verify_grant
+from cairn.model_provider import ModelProvider, ModelProviderConfigStore
 from cairn.orchestrator.config import OrchestratorSettings
 from cairn.orchestrator.engine import DeterministicOrchestrator
 from cairn.sandbox.contracts import (
@@ -382,6 +383,34 @@ def test_the_sandbox_receives_a_verifiable_grant_bound_to_its_task(
     assert grant.worker == "deterministic-orchestrator"
     assert grant.max_requests >= 1
     assert UUID(grant.task_id)
+
+
+def test_workbench_selected_model_is_bound_into_the_real_worker_grant(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    provider_file = tmp_path / "llm" / "provider.json"
+    ModelProviderConfigStore(provider_file, b"m" * 32).write(
+        provider=ModelProvider.OPENAI,
+        base_url="https://api.openai.com",
+        model="gpt-5-mini",
+        api_key="sk-not-readable-by-orchestrator",
+    )
+    settings = settings_with_grant_key(tmp_path).model_copy(
+        update={"llm_provider_config_file": provider_file}
+    )
+
+    _audit_run, sandbox = run_semantic(
+        db_session,
+        tmp_path,
+        settings=settings,
+    )
+    grant = verify_grant(
+        sandbox.semantic_requests[0].semantic.grant_token,
+        GRANT_KEY,
+    )
+
+    assert grant.model == "gpt-5-mini"
 
 
 def test_a_minted_grant_is_short_lived_enough_for_the_gateway(

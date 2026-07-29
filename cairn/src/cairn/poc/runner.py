@@ -27,6 +27,7 @@ from cairn.poc.contracts import (
     PocResult,
 )
 from cairn.poc.prompt import PocAssignment
+from cairn.model_grants import unverified_grant_model
 
 ASSIGNMENT_FILENAME = "cairn-poc-assignment.json"
 RESULT_FILENAME = "poc-result.json"
@@ -134,6 +135,7 @@ def run(source: Path, scratch: Path, output: Path) -> PocResult:
         return _failed(finding_id, REASON_ASSIGNMENT_INVALID)
     try:
         grant, gateway_url = take_credentials()
+        model = unverified_grant_model(grant)
     except ValueError:
         return _failed(finding_id, REASON_GRANT_MISSING)
     try:
@@ -145,6 +147,7 @@ def run(source: Path, scratch: Path, output: Path) -> PocResult:
         client = SemanticModelClient(
             base_url=gateway_url,
             grant_token=grant,
+            model=model,
             max_tokens=_positive_env(MAX_TOKENS_ENV, 16000),
         )
     except (ImportError, ValueError):
@@ -155,6 +158,7 @@ def run(source: Path, scratch: Path, output: Path) -> PocResult:
         client,
         broker,
         assignment=assignment,
+        model=model,
         max_turns=_positive_env(MAX_TURNS_ENV, 16),
     )
     return author.run()

@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cairn.invalid/schemas/closed-platform-gold-v1.schema.json",
+  "title": "Cairn closed-platform gold manifest v1",
+  "x-cairn-runtime-invariants": [
+    "annotation_protocol.adjudicator_ref must differ from both reviewer_refs",
+    "samples must have unique sample_id and artifact.sha256 values",
+    "entrypoint, finding, and coverage-unit fingerprints must be unique within each sample",
+    "evidence sha256 values must be unique within each conclusion"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "benchmark_id",
+    "visibility",
+    "label_status",
+    "authorization",
+    "annotation_protocol",
+    "samples"
+  ],
+  "properties": {
+    "schema_version": {"const": "closed-platform-gold-v1"},
+    "benchmark_id": {"$ref": "#/$defs/identifier"},
+    "visibility": {"enum": ["synthetic", "private"]},
+    "label_status": {"enum": ["provisional", "human-adjudicated"]},
+    "authorization": {"$ref": "#/$defs/authorization"},
+    "annotation_protocol": {"$ref": "#/$defs/annotation_protocol"},
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/sample"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"visibility": {"const": "private"}},
+        "required": ["visibility"]
+      },
+      "then": {
+        "properties": {
+          "label_status": {"const": "human-adjudicated"},
+          "samples": {
+            "items": {"$ref": "#/$defs/private_sample_references"}
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "samples": {
+            "items": {"$ref": "#/$defs/synthetic_sample_references"}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "authorization": {
+            "properties": {"permits_dynamic_execution": {"const": false}},
+            "required": ["permits_dynamic_execution"]
+          }
+        },
+        "required": ["authorization"]
+      },
+      "then": {
+        "properties": {
+          "samples": {
+            "items": {
+              "properties": {
+                "findings": {
+                  "items": {
+                    "properties": {"dynamic_reproducible": {"const": false}}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "record_ref": {
+      "type": "string",
+      "maxLength": 520,
+      "pattern": "^record://[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+    },
+    "artifact_ref": {
+      "type": "string",
+      "maxLength": 520,
+      "pattern": "^(fixture|secret)://[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+    },
+    "key_ref": {
+      "type": "string",
+      "maxLength": 520,
+      "pattern": "^key://[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorization_ref",
+        "scope_sha256",
+        "permits_static_analysis",
+        "permits_decompilation",
+        "permits_dynamic_execution"
+      ],
+      "properties": {
+        "authorization_ref": {"$ref": "#/$defs/record_ref"},
+        "scope_sha256": {"$ref": "#/$defs/sha256"},
+        "permits_static_analysis": {"const": true},
+        "permits_decompilation": {"type": "boolean"},
+        "permits_dynamic_execution": {"type": "boolean"}
+      }
+    },
+    "annotation_protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer_refs", "adjudicator_ref", "instructions_sha256"],
+      "properties": {
+        "reviewer_refs": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/record_ref"}
+        },
+        "adjudicator_ref": {"$ref": "#/$defs/record_ref"},
+        "instructions_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "kind", "artifact_ref", "provenance"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "kind": {"enum": ["jar", "war", "ear", "class-directory", "hybrid"]},
+        "artifact_ref": {"$ref": "#/$defs/artifact_ref"},
+        "decryption_key_ref": {
+          "oneOf": [
+            {"$ref": "#/$defs/key_ref"},
+            {"type": "null"}
+          ]
+        },
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "custody_record_ref",
+        "custody_record_sha256",
+        "acquisition_record_ref",
+        "acquisition_record_sha256"
+      ],
+      "properties": {
+        "custody_record_ref": {"$ref": "#/$defs/record_ref"},
+        "custody_record_sha256": {"$ref": "#/$defs/sha256"},
+        "acquisition_record_ref": {"$ref": "#/$defs/record_ref"},
+        "acquisition_record_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "evidence_ref"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "evidence_ref": {"$ref": "#/$defs/artifact_ref"},
+        "decryption_key_ref": {
+          "oneOf": [
+            {"$ref": "#/$defs/key_ref"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "evidence_list": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/evidence"}
+    },
+    "entrypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "evidence"],
+      "properties": {
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "evidence": {"$ref": "#/$defs/evidence_list"}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "severity",
+        "required_evidence",
+        "dynamic_reproducible",
+        "evidence"
+      ],
+      "properties": {
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+        "required_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["entrypoint", "input", "guard", "call-chain", "sink", "runtime"]
+          }
+        },
+        "dynamic_reproducible": {"type": "boolean"},
+        "evidence": {"$ref": "#/$defs/evidence_list"}
+      }
+    },
+    "coverage_unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "evidence"],
+      "properties": {
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "evidence": {"$ref": "#/$defs/evidence_list"}
+      }
+    },
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_id", "artifact", "entrypoints", "findings", "coverage_units"],
+      "properties": {
+        "sample_id": {"$ref": "#/$defs/identifier"},
+        "artifact": {"$ref": "#/$defs/artifact"},
+        "entrypoints": {
+          "type": "array",
+          "maxItems": 100000,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/entrypoint"}
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 100000,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/finding"}
+        },
+        "coverage_units": {
+          "type": "array",
+          "maxItems": 100000,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/coverage_unit"}
+        }
+      }
+    },
+    "private_evidence_reference": {
+      "required": ["decryption_key_ref"],
+      "properties": {
+        "evidence_ref": {
+          "type": "string",
+          "maxLength": 520,
+          "pattern": "^secret://[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+        },
+        "decryption_key_ref": {"$ref": "#/$defs/key_ref"}
+      }
+    },
+    "synthetic_evidence_reference": {
+      "properties": {
+        "evidence_ref": {
+          "type": "string",
+          "maxLength": 520,
+          "pattern": "^fixture://[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+        },
+        "decryption_key_ref": {"type": "null"}
+      }
+    },
+    "private_sample_references": {
+      "properties": {
+        "artifact": {
+          "required": ["decryption_key_ref"],
+          "properties": {
+            "artifact_ref": {
+              "type": "string",
+              "maxLength": 520,
+              "pattern": "^secret://[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+            },
+            "decryption_key_ref": {"$ref": "#/$defs/key_ref"}
+          }
+        },
+        "entrypoints": {
+          "items": {
+            "properties": {
+              "evidence": {
+                "items": {"$ref": "#/$defs/private_evidence_reference"}
+              }
+            }
+          }
+        },
+        "findings": {
+          "items": {
+            "properties": {
+              "evidence": {
+                "items": {"$ref": "#/$defs/private_evidence_reference"}
+              }
+            }
+          }
+        },
+        "coverage_units": {
+          "items": {
+            "properties": {
+              "evidence": {
+                "items": {"$ref": "#/$defs/private_evidence_reference"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "synthetic_sample_references": {
+      "properties": {
+        "artifact": {
+          "properties": {
+            "artifact_ref": {
+              "type": "string",
+              "maxLength": 520,
+              "pattern": "^fixture://[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+            },
+            "decryption_key_ref": {"type": "null"}
+          }
+        },
+        "entrypoints": {
+          "items": {
+            "properties": {
+              "evidence": {
+                "items": {"$ref": "#/$defs/synthetic_evidence_reference"}
+              }
+            }
+          }
+        },
+        "findings": {
+          "items": {
+            "properties": {
+              "evidence": {
+                "items": {"$ref": "#/$defs/synthetic_evidence_reference"}
+              }
+            }
+          }
+        },
+        "coverage_units": {
+          "items": {
+            "properties": {
+              "evidence": {
+                "items": {"$ref": "#/$defs/synthetic_evidence_reference"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

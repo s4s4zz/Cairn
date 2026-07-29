@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from cairn.model_provider import normalize_provider_base_url
+
 DEFAULT_MODEL_ALLOWLIST = ("claude-opus-5", "claude-opus-4-8")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -16,16 +18,21 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 class GatewaySettings(BaseSettings):
     """Configuration owned by the independently deployed LLM Gateway.
 
-    The Gateway is the only component that holds the long-term model API key
-    (design spec §5.1 / §9.5). It never touches PostgreSQL: the per-run budget
-    ceiling travels inside the signed grant, so the control plane decides the
-    budget and the Gateway enforces it without control-plane reachability.
+    The Gateway is the only component allowed to use the long-term model API
+    key for inference (design spec §5.1 / §9.5). The trusted Admin API may
+    decrypt it only to update configuration or enumerate models. The Gateway
+    never touches PostgreSQL: the per-run budget ceiling travels inside the
+    signed grant, so it can enforce policy without control-plane reachability.
     """
 
     model_config = SettingsConfigDict(env_prefix="CAIRN_LLM_", extra="ignore")
 
-    api_key_file: Path
+    # Legacy static Anthropic configuration remains supported for deployments
+    # that have not adopted the workbench-managed provider file yet.
+    api_key_file: Path | None = None
     grant_key_file: Path
+    provider_config_file: Path | None = None
+    config_key_file: Path | None = None
     # NoDecode keeps pydantic-settings from JSON-decoding the env value, so
     # CAIRN_LLM_MODEL_ALLOWLIST can be a plain comma-separated list.
     model_allowlist: Annotated[tuple[str, ...], NoDecode] = DEFAULT_MODEL_ALLOWLIST
@@ -81,24 +88,7 @@ class GatewaySettings(BaseSettings):
     @field_validator("upstream_base_url")
     @classmethod
     def validate_upstream_base_url(cls, value: str) -> str:
-        value = value.strip().rstrip("/")
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-            or parsed.path not in {"", "/"}
-        ):
-            raise ValueError("upstream_base_url must be an HTTP(S) service origin")
-        # The long-term model key rides this leg. Plaintext is permitted only
-        # to loopback, which never crosses cairn-llm-egress and is what the
-        # test stubs bind to.
-        if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS:
-            raise ValueError("upstream_base_url must use https outside loopback")
-        return value
+        return normalize_provider_base_url(value)
 
     @field_validator("anthropic_version")
     @classmethod
@@ -112,8 +102,16 @@ class GatewaySettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_key_files(self) -> "GatewaySettings":
-        if self.api_key_file.resolve() == self.grant_key_file.resolve():
+        if self.api_key_file is not None and self.api_key_file.resolve() == self.grant_key_file.resolve():
             raise ValueError("api_key_file and grant_key_file must be distinct")
+        if (self.provider_config_file is None) != (self.config_key_file is None):
+            raise ValueError(
+                "provider_config_file and config_key_file must be configured together"
+            )
+        if self.provider_config_file is None and self.api_key_file is None:
+            raise ValueError(
+                "either provider_config_file or api_key_file must be configured"
+            )
         return self
 
 

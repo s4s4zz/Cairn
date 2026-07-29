@@ -1,10 +1,12 @@
 """Messages API client for the Semantic Reviewer (§5.1, §9.5, §9.7).
 
 Every request leaves through the LLM Gateway. The worker holds only a
-short-lived grant bound to one AuditRun, one Worker and an expiry; the long-term
-model API key exists solely inside the Gateway, so ``base_url`` points at the
-Gateway origin and ``grant_token`` is what travels as ``x-api-key``. Nothing in
-this module logs a prompt body, a response body, or the grant.
+short-lived grant bound to one AuditRun, one Worker and an expiry; the
+long-term model API key never enters the worker. The trusted configuration API
+stores it encrypted and the Gateway decrypts it for egress, so ``base_url``
+points at the Gateway origin and ``grant_token`` is what travels as
+``x-api-key``. Nothing in this module logs a prompt body, a response body, or
+the grant.
 
 Two design choices are load-bearing:
 
@@ -37,10 +39,6 @@ LOG = logging.getLogger(__name__)
 DEFAULT_MODEL = "claude-opus-5"
 # Effort is nested inside ``output_config``; a top-level ``effort`` is a 400.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-# The Python SDK refuses a non-streaming request it estimates will exceed ten
-# minutes, so a large ``max_tokens`` must stream. The switch lives in exactly
-# one place (:meth:`SemanticModelClient._dispatch`).
-STREAMING_MAX_TOKENS = 16_000
 
 STOP_END_TURN = "end_turn"
 STOP_MAX_TOKENS = "max_tokens"
@@ -88,10 +86,9 @@ class SemanticUnavailable(Exception):
 class MessageTransport(Protocol):
     """The slice of ``client.messages`` this module uses.
 
-    Only ``create`` is required. A transport may also expose ``stream``; the
-    real SDK does, and :meth:`SemanticModelClient._dispatch` uses it above
-    :data:`STREAMING_MAX_TOKENS`. A test double with ``create`` alone stays
-    valid — it simply never streams.
+    Cairn's Gateway contract is one buffered Messages response, so only
+    ``create`` is used even though the real SDK transport also exposes
+    ``stream``.
     """
 
     def create(self, **payload: object) -> object: ...
@@ -270,8 +267,7 @@ class SemanticModelClient:
 
     Holds the request shape in one place so a wrong form cannot be reinvented
     per call site: adaptive thinking (``budget_tokens`` is a 400 on this model
-    family), effort nested inside ``output_config``, and the streaming switch
-    keyed off ``max_tokens``.
+    family) and effort nested inside ``output_config``.
     """
 
     def __init__(
@@ -389,15 +385,16 @@ class SemanticModelClient:
         return payload
 
     def _dispatch(self, payload: dict[str, object]) -> object:
-        """Send the payload, streaming when the output budget is large."""
+        """Send the payload using the Gateway's buffered JSON contract.
 
-        if self.max_tokens < STREAMING_MAX_TOKENS:
-            return self._transport.create(**payload)
-        stream = getattr(self._transport, "stream", None)
-        if stream is None:
-            return self._transport.create(**payload)
-        with stream(**payload) as active:
-            return active.get_final_message()
+        The Anthropic SDK exposes an SSE ``stream`` helper, but the transport
+        here points at Cairn's Gateway rather than directly at Anthropic. The
+        Gateway intentionally returns one final Messages-compatible JSON
+        object for either supported upstream protocol, including large output
+        budgets.
+        """
+
+        return self._transport.create(**payload)
 
     def _unavailable(self, exc: BaseException) -> SemanticUnavailable:
         reason_code, gateway_code = _classify(exc)

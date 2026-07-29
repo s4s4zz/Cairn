@@ -92,6 +92,43 @@ def _hash_payload(prefix: bytes, payload: dict[str, object]) -> str:
     return hashlib.sha256(prefix + encoded).hexdigest()
 
 
+def _v2_location_identity(primary_location: dict[str, object]) -> dict[str, object]:
+    """Keep mutable presentation data out of bytecode identity.
+
+    Decompiled Artifact ids and lines change when the pinned renderer changes.
+    Source line metadata may also be absent from an otherwise identical class.
+    The classfile owner, method name and JVM descriptor remain the fact source.
+    """
+
+    binary_identity = any(
+        primary_location.get(field)
+        for field in (
+            "container_path",
+            "entry_path",
+            "class_name",
+            "method_name",
+            "method_descriptor",
+        )
+    )
+    if binary_identity:
+        return {
+            "container_path": str(primary_location.get("container_path") or ""),
+            "entry_path": str(primary_location.get("entry_path") or ""),
+            "class_name": str(primary_location.get("class_name") or ""),
+            # A JVM descriptor contains parameters and return type, not the name.
+            "method_name": str(primary_location.get("method_name") or ""),
+            "method_descriptor": str(
+                primary_location.get("method_descriptor") or ""
+            ),
+        }
+    symbol = str(primary_location.get("symbol") or "").strip()
+    line = primary_location.get("start_line")
+    return {
+        "source_path": str(primary_location.get("source_path") or ""),
+        "symbol_or_line": symbol or (int(line) if line is not None else ""),
+    }
+
+
 def candidate_identity(
     *,
     snapshot_sha256: str,
@@ -103,6 +140,26 @@ def candidate_identity(
     tool_name: str,
 ) -> tuple[str, str]:
     canonical_weakness = cwe_ids[0] if cwe_ids else category.lower()
+    if primary_location.get("origin_kind") is not None:
+        root_payload = {
+            "snapshot": snapshot_sha256,
+            "weakness": canonical_weakness,
+            "location": _v2_location_identity(primary_location),
+            "sink": (sink or "").strip().lower(),
+        }
+        root_cause_key = _hash_payload(b"cairn-root-cause-v2\0", root_payload)
+        fingerprint = _hash_payload(
+            b"cairn-candidate-v2\0",
+            {
+                **root_payload,
+                "rule": rule_id,
+                "tool": tool_name,
+            },
+        )
+        return fingerprint, root_cause_key
+
+    # This branch is intentionally byte-for-byte compatible with v1. Existing
+    # snapshots and persisted candidate facts must retain their identities.
     symbol = str(primary_location.get("symbol") or "").strip()
     line = int(primary_location["start_line"])
     root_payload = {
@@ -226,6 +283,40 @@ def _merge_existing_defenses(
         {"mechanism": mechanism, "effective": effective, "reasoning": reasoning}
         for mechanism, effective, reasoning in sorted(unique)
     ]
+
+
+def _location_dedup_key(location: dict[str, object]) -> tuple[object, ...]:
+    if location.get("origin_kind") is not None:
+        return ("v2", _canonical_key(location))
+    return (
+        "v1",
+        location["path"],
+        location["start_line"],
+        location["end_line"],
+        location.get("start_column"),
+        location.get("end_column"),
+        location.get("symbol"),
+        location.get("role"),
+    )
+
+
+def _location_sort_key(location: dict[str, object]) -> tuple[object, ...]:
+    if location.get("origin_kind") is not None:
+        return (1, _canonical_key(location))
+    return (
+        0,
+        str(location["path"]).encode("utf-8"),
+        int(location["start_line"]),
+        int(location["end_line"]),
+        -1
+        if location.get("start_column") is None
+        else int(location["start_column"]),
+        -1
+        if location.get("end_column") is None
+        else int(location["end_column"]),
+        str(location.get("symbol") or ""),
+        str(location.get("role") or ""),
+    )
 
 
 def _merge_prose(
@@ -399,15 +490,7 @@ def merge_candidates(
         location_map: dict[tuple[object, ...], dict[str, object]] = {}
         for member in members:
             for location in member["locations"]:
-                key = (
-                    location["path"],
-                    location["start_line"],
-                    location["end_line"],
-                    location.get("start_column"),
-                    location.get("end_column"),
-                    location.get("symbol"),
-                    location.get("role"),
-                )
+                key = _location_dedup_key(location)
                 location_map[key] = dict(location)
         merged.append(
             {
@@ -426,19 +509,7 @@ def merge_candidates(
                 "message": str(primary["message"]),
                 "locations": sorted(
                     location_map.values(),
-                    key=lambda item: (
-                        str(item["path"]).encode("utf-8"),
-                        int(item["start_line"]),
-                        int(item["end_line"]),
-                        # Columns take part in the dedup key above, so they must
-                        # take part here too: without them two members that
-                        # report one line at different column precision sort
-                        # equal and emit in member order.
-                        -1 if item.get("start_column") is None else int(item["start_column"]),
-                        -1 if item.get("end_column") is None else int(item["end_column"]),
-                        str(item.get("symbol") or ""),
-                        str(item.get("role") or ""),
-                    ),
+                    key=_location_sort_key,
                 ),
                 "sink": primary.get("sink"),
                 "fingerprint": root_cause_key,

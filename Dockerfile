@@ -1,3 +1,12 @@
+FROM node:22-bookworm-slim AS workbench-build
+
+WORKDIR /workbench
+COPY ./cairn/web/package.json ./cairn/web/package-lock.json ./
+RUN npm ci
+COPY ./cairn/web/ ./
+RUN npm run build
+
+
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -8,8 +17,15 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_NO_SYNC=1
 
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends \
+ARG DEBIAN_MIRROR=https://deb.debian.org/debian
+ARG DEBIAN_SECURITY_MIRROR=https://deb.debian.org/debian-security
+
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install --yes --no-install-recommends \
         ca-certificates \
         git \
         openssh-client \
@@ -33,6 +49,8 @@ COPY --chown=cairn:cairn ./cairn/uv.lock ./uv.lock
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY --chown=cairn:cairn ./cairn/src ./src
+COPY --from=workbench-build --chown=cairn:cairn \
+    /workbench/dist ./src/cairn/server/static
 COPY --chown=cairn:cairn ./cairn/alembic.ini ./alembic.ini
 COPY --chown=cairn:cairn ./cairn/migrations ./migrations
 RUN uv sync --frozen --no-dev

@@ -14,6 +14,12 @@ from cairn.server.domain.enums import (
     SourceUploadStatus,
 )
 from cairn.server.errors import ConflictError, IngestionError
+from cairn.server.ingestion import (
+    IngestionFailure,
+    IngestionLimits,
+    detect_jvm_artifact,
+    validate_transport_zip,
+)
 from cairn.server.persistence.models import Artifact, SourceUpload
 
 
@@ -29,7 +35,7 @@ class UploadService:
         source_type: SourceType,
         original_filename: str,
         actor: str,
-        max_bytes: int,
+        limits: IngestionLimits,
     ) -> SourceUpload:
         if source_type is SourceType.GIT:
             raise IngestionError(
@@ -42,7 +48,25 @@ class UploadService:
                 "Uploaded archive must not be empty",
             )
 
-        stored = self.artifact_store.put_file(source_path, max_bytes=max_bytes)
+        try:
+            if source_type is SourceType.BINARY_UPLOAD:
+                detected = detect_jvm_artifact(source_path, limits, required=True)
+                assert detected is not None
+                media_type = detected.media_type
+            else:
+                validate_transport_zip(source_path, limits)
+                media_type = "application/zip"
+        except IngestionFailure as exc:
+            raise IngestionError(
+                exc.error_code,
+                exc.message,
+                http_status=exc.http_status,
+            ) from exc
+
+        stored = self.artifact_store.put_file(
+            source_path,
+            max_bytes=limits.upload_max_bytes,
+        )
         expires_at = datetime.now(UTC) + timedelta(hours=24)
         artifact = Artifact(
             audit_run_id=None,
@@ -50,7 +74,7 @@ class UploadService:
             storage_key=stored.storage_key,
             sha256=stored.sha256,
             size_bytes=stored.size_bytes,
-            media_type="application/zip",
+            media_type=media_type,
             access_level=ArtifactAccessLevel.SENSITIVE.value,
             expires_at=expires_at,
         )
@@ -66,12 +90,11 @@ class UploadService:
         )
         self.session.add(upload)
         try:
-            self.session.commit()
+            self.session.flush()
         except IntegrityError as exc:
             self.session.rollback()
             raise ConflictError(
                 "source upload metadata could not be stored",
                 error_code="source_upload_conflict",
             ) from exc
-        self.session.refresh(upload)
         return upload

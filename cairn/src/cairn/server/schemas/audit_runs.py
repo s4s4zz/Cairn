@@ -5,7 +5,13 @@ from uuid import UUID
 
 from pydantic import Field
 
-from cairn.server.domain.enums import AuditRunStatus, AuditStage
+from cairn.server.domain.enums import (
+    AuditRunStatus,
+    AuditStage,
+    AuditTaskStatus,
+    AuditTaskType,
+    BuildStatus,
+)
 from cairn.server.schemas.common import Page, StrictModel
 
 
@@ -63,3 +69,43 @@ class AuditRunFilters(StrictModel):
 
 
 AuditRunPage = Page[AuditRunResponse]
+
+
+class AuditTaskResponse(StrictModel):
+    id: UUID
+    audit_run_id: UUID
+    type: AuditTaskType
+    scope_key: str
+    scope: dict[str, object]
+    status: AuditTaskStatus
+    worker_name: str | None
+    attempt: int
+    max_attempts: int
+    timeout_seconds: int
+    error_code: str | None
+    error_detail: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    output_artifact_ids: list[str]
+    created_at: datetime
+
+
+AuditTaskPage = Page[AuditTaskResponse]
+
+
+class AuditCoverageResponse(StrictModel):
+    audit_run_id: UUID
+    modules_total: int
+    modules_analyzed: int
+    java_files_total: int
+    java_files_analyzed: int
+    entrypoints_total: int
+    entrypoints_analyzed: int
+    sensitive_sinks_total: int
+    sensitive_sinks_analyzed: int
+    build_status: BuildStatus
+    static_tools_completed: dict[str, object]
+    skipped_paths: list[str]
+    unsupported_components: list[dict[str, object]]
+    coverage_warnings: list[dict[str, object]]
+    updated_at: datetime

@@ -19,6 +19,11 @@ from cairn.server.persistence.models.graph import (
     AuditIntent,
     AuditIntentSource,
 )
+from cairn.server.persistence.models.identity import (
+    AuditLogEntry,
+    User,
+    UserSession,
+)
 from cairn.server.persistence.models.ingestion import EncryptedSecret, SourceUpload
 
 __all__ = [
@@ -27,6 +32,7 @@ __all__ = [
     "AuditFact",
     "AuditIntent",
     "AuditIntentSource",
+    "AuditLogEntry",
     "AuditPolicy",
     "AuditRun",
     "AuditTask",
@@ -40,5 +46,7 @@ __all__ = [
     "SnapshotImmutableError",
     "SourceSnapshot",
     "SourceUpload",
+    "User",
+    "UserSession",
     "Verification",
 ]

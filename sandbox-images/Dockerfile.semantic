@@ -12,10 +12,14 @@
 # running.
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# `anthropic` is the only runtime dependency, and it lives in the `semantic`
-# extra so the control-plane image never gains it. Pinned to the same range as
-# cairn/pyproject.toml.
-RUN uv pip install --system --no-cache "anthropic>=0.120,<1"
+ARG PYYAML_VERSION=6.0.3
+
+# The reviewer uses the Anthropic SDK only for the stable Messages transport.
+# Its read-only Tool Broker can rebuild the local Java inventory on demand,
+# which imports PyYAML while inspecting Maven/Spring configuration.
+RUN uv pip install --system --no-cache \
+    "anthropic>=0.120,<1" \
+    "pyyaml==${PYYAML_VERSION}"
 
 RUN groupadd --gid 65532 sandbox \
     && useradd \
@@ -30,6 +34,7 @@ RUN groupadd --gid 65532 sandbox \
 
 COPY ./sandbox-images/semantic_runner.py /opt/cairn/bin/cairn-semantic-runner
 COPY ./cairn/src/cairn/__init__.py /opt/cairn/lib/cairn/__init__.py
+COPY ./cairn/src/cairn/model_grants.py /opt/cairn/lib/cairn/model_grants.py
 COPY ./cairn/src/cairn/analysis /opt/cairn/lib/cairn/analysis
 COPY ./cairn/src/cairn/semantic /opt/cairn/lib/cairn/semantic
 COPY ./cairn/src/cairn/verify /opt/cairn/lib/cairn/verify
