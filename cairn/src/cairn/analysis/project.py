@@ -324,6 +324,21 @@ def _build_argv(module_root: Path, build_system: str) -> tuple[str, list[str]]:
     )
 
 
+def _plan_java_version(module: _Module, all_modules: list[_Module]) -> str | None:
+    """The JDK a module should build on.
+
+    The module's own declaration wins. Falling back to the lowest version any
+    module declares is deliberate: a toolchain that is too old fails loudly at
+    the unsupported class-file version, while one that is too new fails in ways
+    that look like the project's fault.
+    """
+
+    if module.java_versions:
+        return min(module.java_versions, key=int)
+    declared = {version for item in all_modules for version in item.java_versions}
+    return min(declared, key=int) if declared else None
+
+
 def _top_level_modules(modules: list[_Module]) -> list[_Module]:
     return [module for module in modules if module.parent_path is None]
 
@@ -503,6 +518,11 @@ def detect_project(root: Path) -> dict[str, object]:
                 "build_system": module.build_system,
                 "runner": runner,
                 "argv": argv,
+                # The JDK the module says it targets. Carried into the plan so
+                # the build runs on it: compiling a project that declares 8 on a
+                # current JDK fails outright once an annotation processor of that
+                # era reaches into jdk.compiler internals.
+                "java_version": _plan_java_version(module, all_modules),
             }
         )
 

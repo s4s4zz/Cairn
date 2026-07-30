@@ -129,6 +129,47 @@ def prepare_writable_source(source_root: Path, scratch_root: Path) -> Path:
     return work_source
 
 
+# The JDKs the build image carries, newest first. A version the image does not
+# have falls back to the closest one at or above it, and finally to the default:
+# refusing to build at all would turn a toolchain gap into a silent hole in the
+# audit, where a failed compile is at least a recorded coverage gap.
+_JDK_HOMES = {
+    "8": Path("/opt/java/jdk-8"),
+    "11": Path("/opt/java/jdk-11"),
+    "17": Path("/opt/java/jdk-17"),
+}
+_DEFAULT_JDK = Path("/opt/java/openjdk")
+
+
+def select_jdk(java_version: object) -> Path | None:
+    """The JDK home a build step should run on, or None to keep the default."""
+
+    if not isinstance(java_version, str) or not java_version.isdigit():
+        return None
+    exact = _JDK_HOMES.get(java_version)
+    if exact is not None and exact.is_dir():
+        return exact
+    requested = int(java_version)
+    candidates = sorted(
+        (
+            (int(version), home)
+            for version, home in _JDK_HOMES.items()
+            if int(version) >= requested and home.is_dir()
+        ),
+    )
+    return candidates[0][1] if candidates else None
+
+
+def _jdk_environment(environment: dict[str, str], java_version: object) -> dict[str, str]:
+    home = select_jdk(java_version)
+    if home is None:
+        return environment
+    resolved = dict(environment)
+    resolved["JAVA_HOME"] = str(home)
+    resolved["PATH"] = f"{home / 'bin'}:{environment.get('PATH', '')}".rstrip(":")
+    return resolved
+
+
 def _execution_argv(
     step: dict[str, object],
     scratch_root: Path,
@@ -148,6 +189,82 @@ def _execution_argv(
     ]
 
 
+def dependency_proxy() -> str:
+    """The one endpoint a build sandbox may reach to resolve dependencies.
+
+    The build template's network is `internal`, so the sandbox cannot reach a
+    public repository at all: without this, Maven cannot fetch a parent POM and
+    the build fails before compiling anything. The operator runs the proxy under
+    this alias on the build network; pointing an existing Nexus or corporate
+    proxy at the same alias is a `--network-alias` away.
+
+    Empty disables every override below, which is what a deployment whose build
+    network reaches a repository directly should configure.
+    """
+
+    return os.environ.get("CAIRN_DEPENDENCY_PROXY", "cairn-maven-proxy:3128").strip()
+
+
+def write_maven_settings(scratch_root: Path, proxy: str) -> Path:
+    """Write the settings file that sends Maven through the proxy.
+
+    Maven reads neither `HTTP_PROXY` nor the JVM proxy properties for its own
+    transport, so the proxy has to be declared in a settings file. Generated
+    under the scratch root rather than baked into the image so the endpoint has
+    one definition and nothing in the image or the source tree is mutated.
+    """
+
+    host, _, port = proxy.partition(":")
+    port = port or "3128"
+    conf_root = scratch_root / "dependency-proxy"
+    conf_root.mkdir(parents=True, exist_ok=True)
+    settings_path = conf_root / "maven-settings.xml"
+    entries = "".join(
+        f"    <proxy>\n"
+        f"      <id>cairn-dependency-proxy-{protocol}</id>\n"
+        f"      <active>true</active>\n"
+        f"      <protocol>{protocol}</protocol>\n"
+        f"      <host>{host}</host>\n"
+        f"      <port>{port}</port>\n"
+        f"    </proxy>\n"
+        for protocol in ("http", "https")
+    )
+    settings_path.write_text(
+        f"<settings>\n  <proxies>\n{entries}  </proxies>\n</settings>\n",
+        encoding="utf-8",
+    )
+    return settings_path
+
+
+def _proxy_environment(scratch_root: Path, proxy: str) -> dict[str, str]:
+    """Point every route a build tool might take at the proxy.
+
+    Three mechanisms because three tools read three different things: Maven
+    reads a settings file, Gradle reads JVM system properties, and a wrapper
+    script fetching its own distribution reads the environment.
+    """
+
+    if not proxy:
+        return {}
+    host, _, port = proxy.partition(":")
+    port = port or "3128"
+    url = f"http://{host}:{port}"
+    jvm = (
+        f"-Dhttp.proxyHost={host} -Dhttp.proxyPort={port} "
+        f"-Dhttps.proxyHost={host} -Dhttps.proxyPort={port}"
+    )
+    return {
+        "MAVEN_ARGS": f"-s {write_maven_settings(scratch_root, proxy)}",
+        "GRADLE_OPTS": jvm,
+        "HTTP_PROXY": url,
+        "HTTPS_PROXY": url,
+        "http_proxy": url,
+        "https_proxy": url,
+        "NO_PROXY": "localhost,127.0.0.1",
+        "no_proxy": "localhost,127.0.0.1",
+    }
+
+
 def execute_build(
     source_root: Path,
     scratch_root: Path,
@@ -158,6 +275,7 @@ def execute_build(
     work_source = prepare_writable_source(source_root, scratch_root)
     project = detect_project(work_source)
     environment = fixed_environment(scratch_root)
+    environment.update(_proxy_environment(scratch_root, dependency_proxy()))
     Path(environment["HOME"]).mkdir(parents=True, exist_ok=True)
     steps: list[dict[str, object]] = []
     for index, step in enumerate(project["build_plan"]):
@@ -169,7 +287,7 @@ def execute_build(
             _execution_argv(step, scratch_root),
             cwd,
             log_path,
-            environment,
+            _jdk_environment(environment, step.get("java_version")),
             _COMMAND_TIMEOUT_SECONDS,
         )
         if result.reason_code == "ANALYSIS_TOOL_UNAVAILABLE":
@@ -190,6 +308,7 @@ def execute_build(
                 "log_path": relative_log if log_path.exists() else None,
                 "reason_code": result.reason_code
                 or (None if result.exit_code == 0 else "PROJECT_BUILD_FAILED"),
+                "java_version": step.get("java_version"),
             }
         )
 

@@ -1,0 +1,9 @@
+# Destinations a build sandbox may reach, one extended regular expression per
+# line matched against the request host. FilterDefaultDeny makes this an
+# allowlist: a host absent from here is refused, so a repository-declared
+# `<repositories>` entry cannot send the build somewhere else.
+^repo\.maven\.apache\.org$
+^repo1\.maven\.org$
+^plugins\.gradle\.org$
+^services\.gradle\.org$
+^downloads\.gradle\.org$

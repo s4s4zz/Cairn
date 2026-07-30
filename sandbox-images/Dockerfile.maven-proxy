@@ -1,0 +1,26 @@
+# Dependency proxy for the build sandbox.
+#
+# The build template's network is `internal`: a build sandbox has no route
+# anywhere except this container, which is what keeps a repository's own build
+# plugins and scripts from reaching the internet while they run. A build still
+# has to resolve dependencies, so this is the one reachable host on that
+# network and it forwards to exactly one destination allowlist.
+#
+# It is a forward proxy rather than a caching reverse proxy because Maven
+# Central requires HTTPS and this deployment's only egress is an upstream HTTP
+# proxy: reaching the repository means CONNECT, and a CONNECT tunnel is opaque.
+# Artifacts therefore are not cached here — the read-only dependency cache the
+# design calls for would need either direct egress or a TLS-terminating mirror.
+FROM alpine:3.20
+
+RUN apk add --no-cache tinyproxy
+
+COPY ./sandbox-images/maven-proxy.conf /etc/tinyproxy/tinyproxy.conf
+COPY ./sandbox-images/maven-proxy-allowlist /etc/tinyproxy/allowlist
+COPY ./sandbox-images/maven-proxy-entrypoint.sh /usr/local/bin/cairn-dependency-proxy
+
+RUN chmod 0555 /usr/local/bin/cairn-dependency-proxy
+
+EXPOSE 3128
+
+ENTRYPOINT ["/usr/local/bin/cairn-dependency-proxy"]

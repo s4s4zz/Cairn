@@ -327,6 +327,9 @@ class BuildStep(StrictModel):
     build_system: Literal["maven", "gradle"]
     runner: Literal["maven-wrapper", "maven", "gradle-wrapper", "gradle"]
     argv: list[str] = Field(min_length=1, max_length=32)
+    # The JDK the module declares. None when the project says nothing, which
+    # leaves the image default in place.
+    java_version: str | None = Field(default=None, max_length=8)
 
 
 class SymbolRecord(StrictModel):
@@ -768,6 +771,9 @@ class BuildStepResult(StrictModel):
     exit_code: int | None = None
     log_path: RelativePath | None = None
     reason_code: str | None = Field(default=None, max_length=128)
+    # Which JDK the step actually ran on, so a compile failure can be told
+    # apart from a toolchain mismatch when the log is read later.
+    java_version: str | None = Field(default=None, max_length=8)
 
 
 class RunnableArtifact(StrictModel):

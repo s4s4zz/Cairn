@@ -13,6 +13,18 @@ ARG ASM_VERSION=9.8
 ARG ASM_SHA256=876eab6a83daecad5ca67eb9fcabb063c97b5aeb8cf1fca7a989ecde17522051
 ARG CFR_VERSION=0.152
 ARG CFR_SHA256=f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2
+# A repository is audited as it is, not as it would have to be rewritten to
+# build on a current JDK: a Spring Boot 2.x project pinning Lombok 1.18.12
+# cannot compile on 17 at all, because jdk.compiler stopped exporting the
+# internals that Lombok version reaches into. The image therefore carries the
+# three lines still in use, and the build selects one per module from the
+# version the project itself declares.
+ARG TEMURIN8_VERSION=jdk8u492-b09
+ARG TEMURIN8_URL=https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u492-b09/OpenJDK8U-jdk_x64_linux_hotspot_8u492b09.tar.gz
+ARG TEMURIN8_SHA256=da257f161d7f8c6ca5b0e5d9e4090f65ac28c5e398072e68b8ae87988b1d1a2e
+ARG TEMURIN11_VERSION=jdk-11.0.32+9
+ARG TEMURIN11_URL=https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.32%2B9/OpenJDK11U-jdk_x64_linux_hotspot_11.0.32_9.tar.gz
+ARG TEMURIN11_SHA256=5906e0339e9322a688b2375eaf40666e00a16e008b0067b0a9f9e4b6c5033720
 
 RUN sed -i \
         -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
@@ -27,7 +39,25 @@ RUN sed -i \
     && rm -rf /var/lib/apt/lists/* \
     && java_home="$(dirname "$(dirname "$(readlink -f /usr/bin/java)")")" \
     && mkdir -p /opt/java \
-    && ln -s "${java_home}" /opt/java/openjdk
+    && ln -s "${java_home}" /opt/java/openjdk \
+    && ln -s "${java_home}" /opt/java/jdk-17
+
+RUN curl --fail --location --silent --show-error \
+        --retry 5 --retry-all-errors --connect-timeout 30 \
+        "${TEMURIN8_URL}" --output /tmp/jdk8.tar.gz \
+    && echo "${TEMURIN8_SHA256}  /tmp/jdk8.tar.gz" | sha256sum --check --strict \
+    && mkdir -p /opt/java/jdk-8 \
+    && tar --extract --gzip --file /tmp/jdk8.tar.gz --directory /opt/java/jdk-8 \
+        --strip-components=1 \
+    && rm /tmp/jdk8.tar.gz \
+    && curl --fail --location --silent --show-error \
+        --retry 5 --retry-all-errors --connect-timeout 30 \
+        "${TEMURIN11_URL}" --output /tmp/jdk11.tar.gz \
+    && echo "${TEMURIN11_SHA256}  /tmp/jdk11.tar.gz" | sha256sum --check --strict \
+    && mkdir -p /opt/java/jdk-11 \
+    && tar --extract --gzip --file /tmp/jdk11.tar.gz --directory /opt/java/jdk-11 \
+        --strip-components=1 \
+    && rm /tmp/jdk11.tar.gz
 
 RUN curl --fail --location --silent --show-error \
         "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \

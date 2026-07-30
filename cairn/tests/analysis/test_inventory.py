@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from cairn.analysis.contracts import InventoryResult
 from cairn.analysis.indexer import build_inventory, index_source
 from cairn.analysis.project import detect_project
@@ -33,6 +35,7 @@ def test_maven_multimodule_detection_and_build_plan_are_stable() -> None:
                 "-DskipTests",
                 "package",
             ],
+            "java_version": "21",
         }
     ]
     web = next(item for item in result["modules"] if item["path"] == "web")
@@ -144,11 +147,59 @@ def test_independent_nested_mixed_builds_each_receive_a_build_step(
                 "-DskipTests",
                 "package",
             ],
+            "java_version": None,
         },
         {
             "module_path": "tools/worker",
             "build_system": "gradle",
             "runner": "gradle",
             "argv": ["gradle", "--no-daemon", "--console=plain", "assemble"],
+            "java_version": None,
         },
     ]
+
+
+def test_a_module_builds_on_the_jdk_it_declares(tmp_path: Path) -> None:
+    """A project is audited as it is, not as it would have to be rewritten.
+
+    A Spring Boot 2.x project pinning an annotation processor of its era cannot
+    compile on a current JDK at all, so the declared version has to reach the
+    build rather than stopping at the inventory.
+    """
+
+    tmp_path.joinpath("pom.xml").write_text(
+        """<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>demo</groupId>
+  <artifactId>legacy</artifactId>
+  <version>1.0.0</version>
+  <properties><java.version>1.8</java.version></properties>
+</project>
+"""
+    )
+
+    result = detect_project(tmp_path)
+
+    assert result["java_versions"] == ["8"]
+    assert result["build_plan"][0]["java_version"] == "8"
+
+
+def test_select_jdk_prefers_the_exact_version_then_the_next_one_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cairn.analysis import execution
+
+    homes = {version: tmp_path / f"jdk-{version}" for version in ("8", "17")}
+    for home in homes.values():
+        home.mkdir()
+    monkeypatch.setattr(execution, "_JDK_HOMES", homes)
+
+    assert execution.select_jdk("8") == homes["8"]
+    assert execution.select_jdk("17") == homes["17"]
+    # 11 is absent, so the next usable toolchain up is chosen rather than a
+    # lower one that could not read the project's class files.
+    assert execution.select_jdk("11") == homes["17"]
+    # Nothing at or above 21, and no declaration at all, both keep the default.
+    assert execution.select_jdk("21") is None
+    assert execution.select_jdk(None) is None
