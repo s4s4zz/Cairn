@@ -10,6 +10,7 @@ const auditRunApi = vi.hoisted(() => ({
   get: vi.fn(),
   tasks: vi.fn(),
   coverage: vi.fn(),
+  stages: vi.fn(),
   cancel: vi.fn(),
   retry: vi.fn(),
   remove: vi.fn(),
@@ -133,6 +134,7 @@ beforeEach(() => {
   auditRunApi.get.mockResolvedValue(run);
   auditRunApi.tasks.mockResolvedValue({ items: [task("worker-alpha")], meta: { limit: 500, offset: 0, total: 1 } });
   auditRunApi.coverage.mockResolvedValue(coverage);
+  auditRunApi.stages.mockResolvedValue([]);
   auditRunApi.remove.mockResolvedValue(undefined);
   reportApi.list.mockResolvedValue({ items: [report], meta: { limit: 1, offset: 0, total: 1 } });
   reportApi.generate.mockResolvedValue({ ...report, id: "report-new", version: 3 });
@@ -313,6 +315,49 @@ describe("AuditRunDetailView", () => {
 
     expect(wrapper.text()).toContain("进入 AI 语义审计");
     expect(wrapper.text()).toContain("新增 5 个候选（累计 5）");
+    wrapper.unmount();
+  });
+
+  it("states the run as prose, with each gap given its cause", async () => {
+    auditRunApi.coverage.mockResolvedValue({
+      ...coverage,
+      static_tools_completed: {
+        semgrep: { status: "completed" },
+        findsecbugs: { status: "skipped", reason_code: "BYTECODE_UNAVAILABLE" },
+      },
+    });
+
+    const wrapper = await renderView();
+    const digest = wrapper.get(".run-digest").text();
+
+    expect(digest).toContain("扫描 1 个模块、2 个 Java 文件");
+    expect(digest).toContain("findsecbugs 因无字节码跳过");
+    wrapper.unmount();
+  });
+
+  it("gives task-less stages a duration from the recorded stage windows", async () => {
+    auditRunApi.stages.mockResolvedValue([
+      { stage: "ingesting", entered_at: "2026-07-29T01:01:00Z", exited_at: "2026-07-29T01:05:00Z" },
+      { stage: "preprocessing", entered_at: "2026-07-29T01:05:00Z", exited_at: null },
+    ]);
+
+    const wrapper = await renderView();
+
+    expect(auditRunApi.stages).toHaveBeenCalledWith(run.id);
+    const ingesting = wrapper
+      .findAll(".stage-group")
+      .find((group) => group.attributes("data-stage") === "ingesting");
+    expect(ingesting?.text()).toContain("4分00");
+    wrapper.unmount();
+  });
+
+  it("still renders when the stage endpoint is unavailable", async () => {
+    auditRunApi.stages.mockRejectedValue(new Error("not found"));
+
+    const wrapper = await renderView();
+
+    expect(wrapper.text()).toContain("审计阶段");
+    expect(wrapper.find(".state-panel--error").exists()).toBe(false);
     wrapper.unmount();
   });
 

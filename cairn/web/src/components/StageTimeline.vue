@@ -23,13 +23,19 @@ import {
   taskTitle,
   timeoutLabel,
 } from "@/taskLabels";
-import type { AuditRun, AuditTask, ToolCoverageRecord } from "@/types/api";
+import type {
+  AuditRun,
+  AuditRunStageEvent,
+  AuditTask,
+  ToolCoverageRecord,
+} from "@/types/api";
 import { duration, formatDate, shortId } from "@/utils";
 
 const props = defineProps<{
   run: AuditRun;
   tasks: AuditTask[];
   toolCoverage?: Record<string, ToolCoverageRecord> | null;
+  stageEvents?: AuditRunStageEvent[] | null;
 }>();
 
 const clock = computed(() =>
@@ -37,6 +43,7 @@ const clock = computed(() =>
     run: props.run,
     tasks: props.tasks,
     toolCoverage: props.toolCoverage,
+    stageEvents: props.stageEvents,
     nowMs: Date.now(),
     formatDuration: compactDuration,
   }),
@@ -206,29 +213,31 @@ defineExpose({
             <small>{{ stageSummary(index) }}</small>
           </span>
           <span class="stage-state">{{ stateLabel(state(index)) }}</span>
-          <span class="stage-meta stage-meta--share">
-            <small>耗时占比</small>
-            <span class="share">
-              <span class="share__track">
-                <span :style="{ width: `${(share(index) ?? 0) * 100}%` }" />
+          <span class="stage-metrics">
+            <span class="stage-meta stage-meta--share">
+              <small>耗时占比</small>
+              <span class="share">
+                <span class="share__track">
+                  <span :style="{ width: `${(share(index) ?? 0) * 100}%` }" />
+                </span>
+                <strong>{{ share(index) === null ? "-" : `${Math.round(share(index)! * 100)}%` }}</strong>
               </span>
-              <strong>{{ share(index) === null ? "-" : `${Math.round(share(index)! * 100)}%` }}</strong>
             </span>
-          </span>
-          <span class="stage-meta">
-            <small>耗时</small>
-            <strong>{{ elapsed(index) }}</strong>
-          </span>
-          <span class="stage-meta">
-            <small>产出</small>
-            <strong>{{ stageCandidates(index) === null ? "-" : `${stageCandidates(index)} 候选` }}</strong>
-          </span>
-          <span class="stage-meta">
-            <small>重试</small>
-            <strong>
-              <RotateCcw v-if="attempts(index) !== '-'" :size="11" />
-              {{ attempts(index) }}
-            </strong>
+            <span class="stage-meta">
+              <small>耗时</small>
+              <strong>{{ elapsed(index) }}</strong>
+            </span>
+            <span class="stage-meta">
+              <small>产出</small>
+              <strong>{{ stageCandidates(index) === null ? "-" : `${stageCandidates(index)} 候选` }}</strong>
+            </span>
+            <span class="stage-meta">
+              <small>重试</small>
+              <strong>
+                <RotateCcw v-if="attempts(index) !== '-'" :size="11" />
+                {{ attempts(index) }}
+              </strong>
+            </span>
           </span>
           <ChevronDown v-if="stageTasks(index).length" class="stage-chevron" :size="16" />
         </summary>
@@ -322,14 +331,18 @@ defineExpose({
 .stage-row {
   display: grid;
   min-height: 72px;
-  grid-template-columns:
-    28px minmax(190px, 1.4fr) 72px minmax(104px, 0.9fr)
-    72px 72px 56px 18px;
+  grid-template-columns: 28px minmax(180px, 1.3fr) 72px minmax(288px, 1fr) 18px;
   align-items: center;
   gap: 10px;
   padding: 9px 14px;
   cursor: pointer;
   list-style: none;
+}
+.stage-metrics {
+  display: grid;
+  grid-template-columns: minmax(92px, 1.2fr) 68px 74px 56px;
+  gap: 10px;
+  min-width: 0;
 }
 .stage-row::-webkit-details-marker {
   display: none;
@@ -577,32 +590,43 @@ details[open] .stage-chevron {
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-@media (max-width: 1100px) {
+/* Narrow screens fold the metrics onto a second line instead of dropping
+   them: a hidden retry count or a hidden elapsed time is exactly the kind of
+   detail a reader opens this page for. */
+@media (max-width: 1020px) {
   .stage-row {
-    grid-template-columns: 28px minmax(180px, 1fr) 72px 72px 72px 56px 18px;
+    grid-template-columns: 28px minmax(0, 1fr) 72px 18px;
+    row-gap: 9px;
+    padding-bottom: 11px;
+  }
+  .stage-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    grid-column: 1 / -1;
+    gap: 6px 18px;
+    padding-left: 38px;
+  }
+  .stage-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
   }
   .stage-meta--share {
-    display: none;
+    min-width: 132px;
+  }
+  .stage-chevron {
+    grid-row: 1;
+    grid-column: 4;
   }
 }
 @media (max-width: 860px) {
-  .stage-row {
-    grid-template-columns: 28px minmax(160px, 1fr) 72px 72px 18px;
-  }
-  .stage-meta:nth-of-type(3),
-  .stage-meta:nth-of-type(4) {
-    display: none;
-  }
   .task-row {
     grid-template-columns: 1fr;
   }
 }
 @media (max-width: 620px) {
-  .stage-row {
-    grid-template-columns: 28px minmax(140px, 1fr) 66px 18px;
-  }
-  .stage-meta {
-    display: none;
+  .stage-metrics {
+    padding-left: 0;
   }
   .task-list {
     padding-left: 14px;

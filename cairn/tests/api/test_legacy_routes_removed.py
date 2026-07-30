@@ -78,6 +78,7 @@ def test_openapi_exposes_only_audit_domain_contracts(client: TestClient) -> None
         "/api/v1/audit-runs/{run_id}",
         "/api/v1/audit-runs/{run_id}/tasks",
         "/api/v1/audit-runs/{run_id}/coverage",
+        "/api/v1/audit-runs/{run_id}/stages",
         "/api/v1/audit-runs/{run_id}/events",
         "/api/v1/audit-runs/{run_id}/cancel",
         "/api/v1/audit-runs/{run_id}/retry",

@@ -19,6 +19,7 @@ from cairn.server.persistence.models import (
     Artifact,
     AuditLogEntry,
     AuditRun,
+    AuditRunStageEvent,
     SourceSnapshot,
 )
 from cairn.server.services.audit_runs import AuditRunService
@@ -403,3 +404,90 @@ def test_internal_preprocessing_transition_requires_ready_snapshot(
         )
         assert transitioned.snapshot_id == snapshot.id
         assert transitioned.current_stage == "preprocessing"
+
+
+def test_stage_entries_are_recorded_and_closed_by_the_next_entry(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """Stage timing used to be reconstructed from the tasks a stage owns.
+
+    `ingesting` owns none, so it had no duration at all. Recording the entry
+    gives it one, and the entry that follows closes it.
+    """
+
+    repository = create_repository(client, "stage-events")
+    policy = create_policy(client, "stage-events-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+    snapshot = create_ready_snapshot(
+        session_factory,
+        repository["id"],
+        policy["id"],
+        suffix="e",
+    )
+
+    with session_factory() as session:
+        service = AuditRunService(session)
+        service.transition(UUID(run["id"]), AuditRunStatus.INGESTING)
+        service.transition(
+            UUID(run["id"]),
+            AuditRunStatus.PREPROCESSING,
+            snapshot_id=snapshot.id,
+        )
+
+    response = client.get(f"/api/v1/audit-runs/{run['id']}/stages")
+    assert response.status_code == 200
+    stages = response.json()
+
+    assert [entry["stage"] for entry in stages] == ["ingesting", "preprocessing"]
+    # The first stage is closed by the second one's entry.
+    assert stages[0]["exited_at"] == stages[1]["entered_at"]
+    # The current stage stays open while the run is live.
+    assert stages[1]["exited_at"] is None
+
+
+def test_the_last_stage_is_closed_by_the_run_completing(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    repository = create_repository(client, "stage-events-terminal")
+    policy = create_policy(client, "stage-events-terminal-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+
+    with session_factory() as session:
+        service = AuditRunService(session)
+        service.transition(UUID(run["id"]), AuditRunStatus.INGESTING)
+        completed = service.transition(UUID(run["id"]), AuditRunStatus.FAILED)
+
+    stages = client.get(f"/api/v1/audit-runs/{run['id']}/stages").json()
+
+    assert len(stages) == 1
+    assert stages[0]["stage"] == "ingesting"
+    assert stages[0]["exited_at"] is not None
+    assert completed.current_stage == "ingesting"
+
+
+def test_deleting_a_run_removes_its_stage_entries(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    repository = create_repository(client, "stage-events-delete")
+    policy = create_policy(client, "stage-events-delete-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+
+    with session_factory() as session:
+        AuditRunService(session).transition(UUID(run["id"]), AuditRunStatus.INGESTING)
+    with session_factory() as session:
+        AuditRunService(session).transition(UUID(run["id"]), AuditRunStatus.CANCELLING)
+    with session_factory() as session:
+        AuditRunService(session).transition(UUID(run["id"]), AuditRunStatus.CANCELLED)
+
+    assert client.delete(f"/api/v1/audit-runs/{run['id']}").status_code == 204
+
+    with session_factory() as session:
+        remaining = session.scalars(
+            select(AuditRunStageEvent).where(
+                AuditRunStageEvent.audit_run_id == UUID(run["id"])
+            )
+        ).all()
+    assert remaining == []

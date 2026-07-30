@@ -43,6 +43,7 @@ EXPECTED_TABLES = {
     "source_snapshots",
     "audit_policies",
     "audit_runs",
+    "audit_run_stage_events",
     "audit_tasks",
     "artifacts",
     "findings",

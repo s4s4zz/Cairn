@@ -4,12 +4,18 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { buildRunClock, type ClockBar } from "@/runClock";
 import { isTerminal } from "@/stages";
 import { compactDuration } from "@/taskLabels";
-import type { AuditRun, AuditTask, ToolCoverageRecord } from "@/types/api";
+import type {
+  AuditRun,
+  AuditRunStageEvent,
+  AuditTask,
+  ToolCoverageRecord,
+} from "@/types/api";
 
 const props = defineProps<{
   run: AuditRun;
   tasks: AuditTask[];
   toolCoverage?: Record<string, ToolCoverageRecord> | null;
+  stageEvents?: AuditRunStageEvent[] | null;
 }>();
 
 const emit = defineEmits<{ (event: "select", taskId: string): void }>();
@@ -43,6 +49,7 @@ const clock = computed(() =>
     run: props.run,
     tasks: props.tasks,
     toolCoverage: props.toolCoverage,
+    stageEvents: props.stageEvents,
     nowMs: now.value,
     formatDuration: compactDuration,
   }),

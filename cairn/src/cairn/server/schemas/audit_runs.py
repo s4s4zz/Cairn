@@ -93,6 +93,14 @@ class AuditTaskResponse(StrictModel):
 AuditTaskPage = Page[AuditTaskResponse]
 
 
+class AuditRunStageEventResponse(StrictModel):
+    """One stage entry, closed by the next entry or by the run's completion."""
+
+    stage: AuditStage
+    entered_at: datetime
+    exited_at: datetime | None
+
+
 class AuditCoverageResponse(StrictModel):
     audit_run_id: UUID
     modules_total: int

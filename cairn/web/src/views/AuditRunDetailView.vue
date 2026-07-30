@@ -23,9 +23,17 @@ import StatusBadge from "@/components/StatusBadge.vue";
 import { useAuditRunEvents } from "@/composables/useAuditRunEvents";
 import { useRunNarrative } from "@/composables/useRunNarrative";
 import { buildStatusDisplay, collectGaps, coverageMetrics } from "@/coverage";
+import { buildRunSummary } from "@/runSummary";
 import { STAGES } from "@/stages";
 import { useAuthStore } from "@/stores/auth";
-import type { AuditCoverage, AuditRun, AuditRunEventSnapshot, AuditTask, Report } from "@/types/api";
+import type {
+  AuditCoverage,
+  AuditRun,
+  AuditRunEventSnapshot,
+  AuditRunStageEvent,
+  AuditTask,
+  Report,
+} from "@/types/api";
 import { duration, errorMessage, formatDate, progressValue, shortId } from "@/utils";
 
 const route = useRoute();
@@ -37,6 +45,7 @@ const tasks = ref<AuditTask[]>([]);
 const taskPageTotal = ref(0);
 const taskPageLimit = ref(0);
 const coverage = ref<AuditCoverage | null>(null);
+const stageEvents = ref<AuditRunStageEvent[]>([]);
 const taskCounts = ref<Record<string, number>>({});
 const findingCounts = ref<Record<string, number>>({});
 const coverageWarningCount = ref(0);
@@ -89,6 +98,16 @@ const buildStatus = computed(() =>
 );
 const gaps = computed(() =>
   coverage.value ? collectGaps(coverage.value, tasks.value) : [],
+);
+const summaryClauses = computed(() =>
+  run.value
+    ? buildRunSummary({
+        run: run.value,
+        tasks: tasks.value,
+        coverage: coverage.value,
+        findingCounts: findingCounts.value,
+      })
+    : [],
 );
 
 function applyEvent(event: AuditRunEventSnapshot): void {
@@ -145,6 +164,10 @@ async function load(options: { quiet?: boolean } = {}): Promise<void> {
         () => ({ status: "rejected" }) as const,
       ),
       reportApi.list({ audit_run_id: id, limit: 1 }),
+      auditRunApi
+        .stages(id)
+        .then((value) => { stageEvents.value = value; })
+        .catch(() => { /* Stage records are additive; the waterfall still has task timing. */ }),
     ]);
     run.value = nextRun;
     report.value = reportPage.items[0] ?? null;
@@ -274,16 +297,31 @@ onBeforeUnmount(() => { if (pollTimer) window.clearInterval(pollTimer); });
       <div class="detail-item"><dt>开始时间</dt><dd>{{ formatDate(run.started_at || run.created_at) }}</dd></div>
     </dl>
 
+    <section v-if="summaryClauses.length" class="run-digest">
+      <h2>本次运行摘要</h2>
+      <p>{{ summaryClauses.join("；") }}。</p>
+    </section>
+
     <div class="run-body">
       <div class="run-main">
-        <RunWaterfall :run="run" :tasks="tasks" :tool-coverage="toolCoverage" />
+        <RunWaterfall
+          :run="run"
+          :tasks="tasks"
+          :tool-coverage="toolCoverage"
+          :stage-events="stageEvents"
+        />
 
         <div class="section-title"><h2>审计阶段</h2><p>{{ taskTotal }} 个任务 · {{ run.warning_count }} 条警告</p></div>
         <div v-if="tasksTruncated" class="notice notice--warning task-truncated">
           <AlertTriangle :size="15" />
           <span>本次运行共 {{ taskPageTotal }} 个任务，页面仅加载了前 {{ tasks.length }} 个，下方列表不完整。</span>
         </div>
-        <section class="panel"><StageTimeline :run="run" :tasks="tasks" :tool-coverage="toolCoverage" /></section>
+        <section class="panel"><StageTimeline
+            :run="run"
+            :tasks="tasks"
+            :tool-coverage="toolCoverage"
+            :stage-events="stageEvents"
+          /></section>
 
         <div class="section-title">
           <h2>覆盖与缺口</h2>
@@ -350,11 +388,13 @@ onBeforeUnmount(() => { if (pollTimer) window.clearInterval(pollTimer); });
 .report-ready { margin-bottom: 12px; }
 .report-ready a { display: inline-flex; align-items: center; gap: 4px; color: var(--success); font-size: 10px; font-weight: 700; }
 .run-summary { margin-top: 14px; }
+.run-digest { margin-top: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; }
+.run-digest h2 { margin: 0 0 7px; font-size: 12px; }
+.run-digest p { margin: 0; color: #4a564f; font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
 .progress-cell { display: flex; align-items: center; gap: 8px; }
 .progress-cell .progress-track { max-width: 130px; }
 
-.run-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; margin-top: 16px; }
-.run-main { display: grid; min-width: 0; gap: 0; }
+.run-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; margin-top: 16px; }.run-main { display: grid; min-width: 0; gap: 0; }
 .run-aside { position: sticky; top: 14px; }
 .task-truncated { margin-bottom: 10px; }
 

@@ -137,6 +137,70 @@ describe("buildRunClock", () => {
     expect(clock.hasTiming).toBe(false);
     expect(clock.ticks).toEqual([]);
   });
+
+  // `ingesting` and `human_review` own no task at all, so task-derived timing
+  // can never give them a duration; a recorded window is the only source.
+  it("gives a task-less stage a duration from its recorded window", () => {
+    const clock = buildRunClock({
+      run,
+      tasks: [],
+      stageEvents: [
+        { stage: "ingesting", entered_at: "2026-07-29T01:00:00Z", exited_at: "2026-07-29T01:04:00Z" },
+        { stage: "preprocessing", entered_at: "2026-07-29T01:04:00Z", exited_at: null },
+      ],
+      nowMs: Date.parse("2026-07-29T01:10:00Z"),
+      formatDuration: compactDuration,
+    });
+
+    const ingesting = clock.bars.find((bar) => bar.key === "stage:ingesting");
+    expect(ingesting?.durationMs).toBe(4 * 60 * 1000);
+    expect(ingesting?.note).toBeNull();
+    // The open window keeps growing while the run is live.
+    expect(clock.bars.find((bar) => bar.key === "stage:preprocessing")?.durationMs).toBe(
+      6 * 60 * 1000,
+    );
+  });
+
+  it("closes an open window at the run's completion once it settles", () => {
+    const clock = buildRunClock({
+      run: { ...run, status: "completed", completed_at: "2026-07-29T01:20:00Z" },
+      tasks: [],
+      stageEvents: [
+        { stage: "human_review", entered_at: "2026-07-29T01:00:00Z", exited_at: null },
+      ],
+      nowMs: Date.parse("2026-07-29T09:00:00Z"),
+      formatDuration: compactDuration,
+    });
+
+    expect(clock.bars.find((bar) => bar.key === "stage:human_review")?.durationMs).toBe(
+      20 * 60 * 1000,
+    );
+  });
+
+  it("prefers the recorded window over timing derived from a stage's tasks", () => {
+    const clock = buildRunClock({
+      run,
+      tasks: [
+        task({
+          id: "a",
+          type: "build",
+          scope_key: "deterministic:build",
+          started_at: "2026-07-29T01:02:00Z",
+          finished_at: "2026-07-29T01:08:00Z",
+        }),
+      ],
+      stageEvents: [
+        { stage: "building", entered_at: "2026-07-29T01:01:00Z", exited_at: "2026-07-29T01:09:00Z" },
+      ],
+      nowMs: Date.parse("2026-07-29T01:30:00Z"),
+      formatDuration: compactDuration,
+    });
+
+    // Eight minutes of stage, not the six minutes its single task ran for.
+    expect(clock.bars.find((bar) => bar.key === "stage:building")?.durationMs).toBe(
+      8 * 60 * 1000,
+    );
+  });
 });
 
 describe("stageState", () => {

@@ -28,6 +28,7 @@ from cairn.server.schemas.audit_runs import (
     AuditRunFilters,
     AuditRunPage,
     AuditRunResponse,
+    AuditRunStageEventResponse,
     AuditTaskPage,
     AuditTaskResponse,
 )
@@ -162,6 +163,19 @@ def get_audit_coverage(
     del principal
     coverage = AuditRunService(session).get_coverage(run_id)
     return AuditCoverageResponse.model_validate(coverage)
+
+
+@router.get("/{run_id}/stages", response_model=list[AuditRunStageEventResponse])
+def list_audit_run_stages(
+    run_id: UUID,
+    session: DatabaseSession,
+    principal: RequireAnyRole,
+) -> list[AuditRunStageEventResponse]:
+    del principal
+    return [
+        AuditRunStageEventResponse(stage=stage, entered_at=entered_at, exited_at=exited_at)
+        for stage, entered_at, exited_at in AuditRunService(session).stage_events(run_id)
+    ]
 
 
 @router.get("/{run_id}/events", response_class=StreamingResponse)

@@ -1,6 +1,12 @@
-import { STAGES, isTerminalSuccess, stageIndex, type StageDefinition } from "@/stages";
+import { STAGES, isTerminal, isTerminalSuccess, stageIndex, type StageDefinition } from "@/stages";
 import { shortReason, taskShortTitle } from "@/taskLabels";
-import type { AuditRun, AuditStage, AuditTask, ToolCoverageRecord } from "@/types/api";
+import type {
+  AuditRun,
+  AuditRunStageEvent,
+  AuditStage,
+  AuditTask,
+  ToolCoverageRecord,
+} from "@/types/api";
 
 export type BarStatus =
   | "pending"
@@ -133,14 +139,50 @@ function taskTiming(task: AuditTask, nowMs: number): TimedRow {
 
 const TICK_COUNT = 4;
 
+/**
+ * Recorded stage windows, collapsed to one span per stage.
+ *
+ * A stage that is re-entered keeps the earliest entry and the latest exit, so
+ * the bar still reads as "the time this stage occupied".
+ */
+function stageWindows(
+  events: readonly AuditRunStageEvent[] | null | undefined,
+  run: Pick<AuditRun, "status" | "completed_at">,
+  nowMs: number,
+): Map<AuditStage, TimedRow> {
+  const windows = new Map<AuditStage, TimedRow>();
+  if (!events?.length) return windows;
+  const runEnd = epoch(run.completed_at);
+  for (const event of events) {
+    const startMs = epoch(event.entered_at);
+    if (startMs === null) continue;
+    // An open window belongs to the stage the run is in: it closes at the run's
+    // own completion, or keeps growing while the run is live.
+    const endMs = epoch(event.exited_at) ?? (isTerminal(run) ? runEnd : nowMs);
+    const existing = windows.get(event.stage);
+    windows.set(event.stage, {
+      startMs: existing?.startMs === undefined ? startMs : Math.min(existing.startMs ?? startMs, startMs),
+      endMs:
+        existing?.endMs === undefined || existing.endMs === null
+          ? endMs
+          : endMs === null
+            ? existing.endMs
+            : Math.max(existing.endMs, endMs),
+    });
+  }
+  return windows;
+}
+
 export function buildRunClock(input: {
   run: Pick<AuditRun, "status" | "current_stage" | "started_at" | "completed_at">;
   tasks: readonly AuditTask[];
   toolCoverage?: Record<string, ToolCoverageRecord> | null;
+  stageEvents?: readonly AuditRunStageEvent[] | null;
   nowMs: number;
   formatDuration: (milliseconds: number) => string;
 }): RunClock {
-  const { run, tasks, toolCoverage, nowMs, formatDuration } = input;
+  const { run, tasks, toolCoverage, stageEvents, nowMs, formatDuration } = input;
+  const recorded = stageWindows(stageEvents, run, nowMs);
 
   const starts: number[] = [];
   const ends: number[] = [];
@@ -155,6 +197,10 @@ export function buildRunClock(input: {
     timings.set(task.id, timing);
     if (timing.startMs !== null) starts.push(timing.startMs);
     if (timing.endMs !== null) ends.push(timing.endMs);
+  }
+  for (const window of recorded.values()) {
+    if (window.startMs !== null) starts.push(window.startMs);
+    if (window.endMs !== null) ends.push(window.endMs);
   }
 
   const startMs = starts.length ? Math.min(...starts) : null;
@@ -175,8 +221,11 @@ export function buildRunClock(input: {
     const stageEnds = related
       .map((task) => timings.get(task.id)?.endMs ?? null)
       .filter((value): value is number => value !== null);
-    const stageStart = stageStarts.length ? Math.min(...stageStarts) : null;
-    const stageEnd = stageEnds.length ? Math.max(...stageEnds) : null;
+    // A recorded window is authoritative: it covers the stages that own no
+    // task at all, which task-derived timing can never reach.
+    const window = recorded.get(definition.key);
+    const stageStart = window?.startMs ?? (stageStarts.length ? Math.min(...stageStarts) : null);
+    const stageEnd = window?.endMs ?? (stageEnds.length ? Math.max(...stageEnds) : null);
     const stageDuration =
       stageStart !== null && stageEnd !== null ? Math.max(0, stageEnd - stageStart) : null;
 
@@ -195,8 +244,7 @@ export function buildRunClock(input: {
       timeoutSeconds: null,
       timeoutHeadroomSeconds: null,
       candidateCount: null,
-      note: related.length ? null : "无子任务，暂无时间数据",
-      taskId: null,
+      note: related.length || stageDuration !== null ? null : "无子任务，暂无时间数据",      taskId: null,
     });
 
     for (const task of related) {

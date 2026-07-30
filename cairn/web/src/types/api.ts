@@ -167,6 +167,13 @@ export interface AuditTask {
   created_at: string;
 }
 
+export interface AuditRunStageEvent {
+  stage: AuditStage;
+  entered_at: string;
+  /** Null while the stage is the current one and the run is still live. */
+  exited_at: string | null;
+}
+
 export interface ToolCoverageRecord {
   status?: string;
   version?: string | null;

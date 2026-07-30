@@ -2,6 +2,7 @@ from cairn.server.persistence.models.artifacts import Artifact, AuditCoverage, R
 from cairn.server.persistence.models.core import (
     AuditPolicy,
     AuditRun,
+    AuditRunStageEvent,
     AuditTask,
     Repository,
     SnapshotImmutableError,
@@ -35,6 +36,7 @@ __all__ = [
     "AuditLogEntry",
     "AuditPolicy",
     "AuditRun",
+    "AuditRunStageEvent",
     "AuditTask",
     "Evidence",
     "EncryptedSecret",

@@ -1,6 +1,6 @@
 # Java 审计工作台运行过程表达优化计划
 
-**状态：** 已实现（P1 全部、P2 除阶段时间戳外、P3 部分）；交付记录见第 18 节
+**状态：** 已实现（P1、P2、P3 全部；仅第 6 节回路相关展示待回路落地）；交付记录见第 18 节
 
 **日期：** 2026-07-29
 
@@ -356,24 +356,45 @@ diff 结果而非完整 snapshot，并设置条目上限（超出后折叠为"�
 - **G** 任务产物直达：`output_artifact_ids` 渲染为下载链接
 - **H** 方案一（前端推导）；后端 `BuildStatus` 枚举未动
 - **原则 4.1** `skipped` 全局由中性灰改为琥珀（`StatusBadge`、阶段标记、缺口表一致）
+- **J** 运行叙事摘要：`runSummary.ts` 生成一段以因果陈述缺口的文字，与报告同源
+- **K** 排版：字号 8-9px 提升至 10-12px；窄屏改为次行折行，不再 `display: none`
+  丢弃 Worker / 耗时 / 重试
+- **F** 阶段进入/退出时间戳（含后端）：
+
+  | 变更 | 说明 |
+  | --- | --- |
+  | `AuditRunStageEvent` 模型 | 只记录进入时刻；退出由下一条进入或运行的 `completed_at` 闭合 |
+  | 迁移 `20260729_0010` | `audit_run_stage_events`，`audit_run_id` 为 `ON DELETE CASCADE`，与既有删除路径中"简单 CASCADE 子表"的假设一致 |
+  | `AuditRunService.transition` | 阶段实际变化时才写入；终态与 `created` 无对应阶段，运行保留原阶段以指明停在哪里 |
+  | `GET /audit-runs/{id}/stages` | 只读，服务端已闭合退出时刻，前端不再自行推导 |
+  | `buildRunClock` | 记录窗口优先于任务反推；`ingesting` 与 `human_review` 因此首次有了时长 |
+
+  唯一键取 `(run, stage, entered_at)` 而非 `(run, stage)`，使同一阶段被多次进入时
+  两条记录都保留——这是为回路计划预留的。
 
 ### 18.3 未落地条目
 
-- **F 阶段进入/退出时间戳** —— 需要后端记录与迁移。`ingesting` 与 `human_review`
-  在瀑布中显示"无子任务，暂无时间数据"，是当前能给出的诚实表述
-- **J 运行叙事摘要段落** —— 运行头的一句话状态已实现，整段自动摘要未实现
-- **K 排版** —— 字号已从 8-9px 提升至 10-12px；窄屏仍以 `display: none` 逐级丢弃
-  阶段元数据，未改为次行折行
 - **第 6 节回路相关展示** —— 依赖回路计划落地
 
 ### 18.4 验证
 
 - `vue-tsc --noEmit` 通过
-- `vitest` 15 文件 62 测试通过（实施前 11 文件 29 测试）
+- `vitest` 16 文件 76 测试通过（实施前 11 文件 29 测试）
 - `vite build` 通过；Monaco 与 ECharts 的 chunk 体积告警为既有情况
+- 后端 `pytest -m "not docker and not docker_local and not postgres"`：
+  **1265 passed, 2 skipped, 16 deselected**
+- 迁移离线渲染：`20260729_0010` 正确接在 `20260729_0009` 之后
 
 新增测试覆盖：`stages.test.ts`（含 `building` 永不作为 `current_stage` 出现的边界）、
 `coverage.test.ts`（三态与缺口合并，含"不为未知原因码编造解释"）、
-`runClock.test.ts`（串行阶梯、跳过锚点、超时余量、运行中延伸）、
+`runClock.test.ts`（串行阶梯、跳过锚点、超时余量、运行中延伸、记录窗口优先于任务反推）、
+`runSummary.test.ts`（缺口带原因、成功构建不提及、盘点前不给范围数字）、
 `useRunNarrative.test.ts`（首个快照为基线不产生事件）、
-`AuditRunDetailView.test.ts`（构建前不报失败、截断提示、漏斗消费、叙事重建）。
+`AuditRunDetailView.test.ts`（构建前不报失败、截断提示、漏斗消费、叙事重建、
+阶段窗口接入、阶段接口不可用时页面不整体失败）、
+`tests/api/test_audit_runs.py`（阶段被下一条闭合、终态闭合最后一条、删除级联）。
+
+### 18.5 后续
+
+`taskLabels.ts` 内含一份语义类别标签表，与并行开发中的 `utils.categoryLabel`
+重复。该函数落地后应删除此副本——同一枚举两张表正是本次交付其余部分消除的漂移。

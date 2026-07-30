@@ -23,6 +23,7 @@ from cairn.server.persistence.models import (
     AuditCoverage,
     AuditPolicy,
     AuditRun,
+    AuditRunStageEvent,
     AuditTask,
     Finding,
     Repository,
@@ -56,6 +57,9 @@ _ACTIVE_TASK_STATUSES = {
     AuditTaskStatus.CLAIMED.value,
     AuditTaskStatus.RUNNING.value,
 }
+
+# (stage, entered_at, exited_at); the exit is open while the stage is current.
+StageWindow = tuple[str, datetime, datetime | None]
 
 
 class AuditRunService:
@@ -403,15 +407,52 @@ class AuditRunService:
         if next_status is AuditRunStatus.INGESTING and audit_run.started_at is None:
             audit_run.started_at = now
         try:
-            audit_run.current_stage = AuditStage(next_status.value).value
+            entered_stage = AuditStage(next_status.value)
         except ValueError:
+            # Terminal and pre-start statuses have no matching stage; the run
+            # keeps whichever stage it was in, which is what a failed run needs
+            # to report where it stopped.
             pass
+        else:
+            if audit_run.current_stage != entered_stage.value:
+                self.session.add(
+                    AuditRunStageEvent(
+                        audit_run_id=audit_run.id,
+                        stage=entered_stage.value,
+                        entered_at=now,
+                    )
+                )
+            audit_run.current_stage = entered_stage.value
         if next_status in _TERMINAL_RUN_STATUSES:
             audit_run.completed_at = now
 
         self.session.commit()
         self.session.refresh(audit_run)
         return audit_run
+
+    # The annotation is quoted because this class defines its own `list`
+    # method, which shadows the builtin in class body scope.
+    def stage_events(self, run_id: UUID) -> "list[StageWindow]":
+        """Recorded stage entries with the exit each one is closed by.
+
+        A stage runs until the next one is entered; the last one is closed by
+        the run's own `completed_at`, and stays open while the run is live.
+        """
+
+        audit_run = self.get(run_id)
+        entries = list(
+            self.session.scalars(
+                select(AuditRunStageEvent)
+                .where(AuditRunStageEvent.audit_run_id == run_id)
+                .order_by(AuditRunStageEvent.entered_at, AuditRunStageEvent.id)
+            )
+        )
+        resolved: "list[StageWindow]" = []
+        for index, entry in enumerate(entries):
+            following = entries[index + 1] if index + 1 < len(entries) else None
+            exited_at = following.entered_at if following else audit_run.completed_at
+            resolved.append((entry.stage, entry.entered_at, exited_at))
+        return resolved
 
     def _get_locked(self, run_id: UUID) -> AuditRun:
         audit_run = self.session.scalar(

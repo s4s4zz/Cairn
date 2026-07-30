@@ -4,6 +4,7 @@ import type {
   AuditLogEntry,
   AuditPolicy,
   AuditRun,
+  AuditRunStageEvent,
   AuditRunStatus,
   AuditTask,
   Finding,
@@ -108,6 +109,7 @@ export const auditRunApi = {
   remove: (id: string) => apiRequest<void>(`/audit-runs/${id}`, { method: "DELETE" }),
   tasks: (id: string) => apiRequest<Page<AuditTask>>(`/audit-runs/${id}/tasks`, { query: { limit: 500 } }),
   coverage: (id: string) => apiRequest<AuditCoverage>(`/audit-runs/${id}/coverage`),
+  stages: (id: string) => apiRequest<AuditRunStageEvent[]>(`/audit-runs/${id}/stages`),
   eventsUrl: (id: string) => apiUrl(`/audit-runs/${id}/events`),
 };
 

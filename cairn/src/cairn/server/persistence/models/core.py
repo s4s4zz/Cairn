@@ -310,6 +310,50 @@ class AuditRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    stage_events: Mapped[list[AuditRunStageEvent]] = relationship(
+        back_populates="audit_run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="AuditRunStageEvent.entered_at",
+    )
+
+
+class AuditRunStageEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """The moment a run entered one stage.
+
+    Stage durations were otherwise reconstructed from the tasks a stage owns,
+    which leaves `ingesting` and `human_review` — the two stages that own no
+    background task — permanently without one. Recording the entry is enough to
+    close that gap: a stage runs until the next entry, and the run's
+    `completed_at` closes the last one.
+
+    The uniqueness key includes `entered_at` rather than being `(run, stage)`
+    so a stage that is entered more than once keeps both entries.
+    """
+
+    __tablename__ = "audit_run_stage_events"
+    __table_args__ = (
+        Index("ix_audit_run_stage_events_run", "audit_run_id", "entered_at"),
+        UniqueConstraint(
+            "audit_run_id",
+            "stage",
+            "entered_at",
+            name="uq_audit_run_stage_events_entry",
+        ),
+        enum_check("stage", AuditStage),
+    )
+
+    audit_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("audit_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    audit_run: Mapped[AuditRun] = relationship(back_populates="stage_events")
 
 
 class AuditTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
