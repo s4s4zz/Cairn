@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+from cairn.analysis.security_dsl import parse_security_dsl
+
 
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _IGNORED_DIRECTORIES = {
@@ -617,6 +619,8 @@ def index_source(root: Path) -> dict[str, object]:
                     "line": declaration_line,
                 }
             )
+
+        interceptors.extend(parse_security_dsl(text, relative))
 
     key = lambda item: (  # noqa: E731
         str(item.get("path", "")).encode("utf-8"),

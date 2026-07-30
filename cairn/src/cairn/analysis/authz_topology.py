@@ -170,24 +170,33 @@ def _classify(
     Returns ``(covered_by, permit_hits, unprotected, reason)``.
     """
 
-    covered_by = sorted(
-        {
-            str(interceptor.get("class_name"))
-            for interceptor in enforcing
-            for pattern in interceptor.get("url_patterns") or []
-            if any(url_pattern_matches(pattern, candidate) for candidate in routes)
-        }
-    )
-    permit_hits = sorted(
-        {
-            str(interceptor.get("class_name"))
-            for interceptor in permits
-            for pattern in interceptor.get("url_patterns") or []
-            if any(url_pattern_matches(pattern, candidate) for candidate in routes)
-        }
-    )
+    def _hits(interceptors: list[dict[str, object]]) -> tuple[list[str], list[str]]:
+        specific: set[str] = set()
+        catch_all: set[str] = set()
+        for interceptor in interceptors:
+            for pattern in interceptor.get("url_patterns") or []:
+                if any(url_pattern_matches(pattern, candidate) for candidate in routes):
+                    bucket = catch_all if pattern.strip() in {"/", "/*", "/**"} else specific
+                    bucket.add(str(interceptor.get("class_name")))
+        return sorted(specific), sorted(catch_all)
+
+    enforce_specific, enforce_catch_all = _hits(enforcing)
+    permit_specific, permit_catch_all = _hits(permits)
+    # A specific rule wins over a catch-all (anyRequest / `/*`): a permitAll on
+    # /admin/** is an explicit pass even when anyRequest().authenticated() would
+    # also match. This is the one slice of Spring Security precedence the regex
+    # tier models; full matcher ordering needs an AST.
+    if enforce_specific:
+        covered_by, permit_hits = enforce_specific, []
+    elif permit_specific:
+        covered_by, permit_hits = [], permit_specific
+    elif enforce_catch_all:
+        covered_by, permit_hits = enforce_catch_all, []
+    elif permit_catch_all:
+        covered_by, permit_hits = [], permit_catch_all
+    else:
+        covered_by, permit_hits = [], []
     protected = bool(covered_by or has_declared_auth)
-    # A permitAll over an endpoint is an explicit pass, not protection.
     unprotected = not protected and not permit_hits and not unknown_global_guard
     reason = None
     if permit_hits and not covered_by:
