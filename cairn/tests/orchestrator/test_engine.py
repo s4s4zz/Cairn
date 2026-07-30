@@ -21,10 +21,12 @@ from cairn.analysis.bytecode_index import (
     build_bytecode_index as build_real_bytecode_index,
 )
 from cairn.analysis.config_rules import scan_config
+from cairn.analysis.contracts import AnalysisOperation
 from cairn.analysis.indexer import build_inventory
 from cairn.orchestrator.config import OrchestratorSettings
 from cairn.orchestrator.engine import DeterministicOrchestrator
 from cairn.orchestrator.errors import OrchestratorError
+from cairn.orchestrator.tasks import get_or_create_task
 from cairn.sandbox.contracts import (
     SandboxArtifact,
     SandboxCreateRequest,
@@ -1314,3 +1316,97 @@ def test_invalid_scanner_manifest_stops_at_attempt_budget_with_coverage(
         "reason_code": "ANALYSIS_MANIFEST_INVALID",
         "candidate_count": 0,
     }
+
+
+class ForgetfulSandbox(FakeSandbox):
+    """A Manager that no longer knows a sandbox a task still references.
+
+    This is the state an orchestrator restart leaves behind: the task committed
+    its own claim before the process died, and the sandbox it names is gone by
+    the time the run resumes.
+    """
+
+    def get(self, sandbox_id: UUID) -> SandboxRecord:
+        raise OrchestratorError("SANDBOX_NOT_FOUND", "sandbox is unknown")
+
+
+def test_failing_a_run_settles_the_task_it_left_running(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    """A run that fails must not leave a task marked running forever.
+
+    Such a row is never cleared by anything else — the run is terminal, so
+    `_fail_run` returns early on every later pass — and the API refuses to
+    delete a run that still has an active task.
+    """
+
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    audit_run = create_run(db_session, store, tmp_path)
+    task = get_or_create_task(db_session, audit_run, AnalysisOperation.INVENTORY)
+    task.status = AuditTaskStatus.RUNNING.value
+    task.sandbox_id = uuid4()
+    task.attempt = 3
+    task.started_at = datetime.now(UTC) - timedelta(hours=16)
+    db_session.commit()
+    task_id = task.id
+
+    token_file = tmp_path / "sandbox-token"
+    token_file.write_text("s" * 40)
+    settings = OrchestratorSettings(
+        database_url="sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        ingestion_work_root=tmp_path / "ingestion",
+        sandbox_auth_token_file=token_file,
+    )
+    orchestrator = DeterministicOrchestrator(
+        db_session,
+        settings,
+        store,
+        ForgetfulSandbox(store, tmp_path, {}),
+    )
+
+    failed = orchestrator.process_run(audit_run.id)
+
+    assert failed.status == AuditRunStatus.FAILED.value
+    settled = db_session.get(AuditTask, task_id)
+    assert settled is not None
+    assert settled.status == AuditTaskStatus.FAILED.value
+    assert settled.finished_at is not None
+    assert settled.error_code == failed.failure_code
+
+
+def test_cancelling_a_run_settles_the_tasks_it_left_open(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    audit_run = create_run(db_session, store, tmp_path)
+    task = get_or_create_task(db_session, audit_run, AnalysisOperation.INVENTORY)
+    task.status = AuditTaskStatus.RUNNING.value
+    audit_run.status = AuditRunStatus.CANCELLING.value
+    db_session.commit()
+    task_id = task.id
+
+    token_file = tmp_path / "sandbox-token"
+    token_file.write_text("s" * 40)
+    settings = OrchestratorSettings(
+        database_url="sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        ingestion_work_root=tmp_path / "ingestion",
+        sandbox_auth_token_file=token_file,
+    )
+    orchestrator = DeterministicOrchestrator(
+        db_session,
+        settings,
+        store,
+        FakeSandbox(store, tmp_path, {}),
+    )
+
+    cancelled = orchestrator.process_run(audit_run.id)
+
+    assert cancelled.status == AuditRunStatus.CANCELLED.value
+    settled = db_session.get(AuditTask, task_id)
+    assert settled is not None
+    assert settled.status == AuditTaskStatus.CANCELLED.value
+    assert settled.finished_at is not None

@@ -153,6 +153,12 @@ _RETRYABLE_OUTPUT_CODES = {
     "ANALYSIS_OUTPUT_INVALID",
     "SANDBOX_ARTIFACT_INVALID",
 }
+# Statuses that mean "this task is still owed work".
+_OPEN_TASK_STATUSES = (
+    AuditTaskStatus.QUEUED.value,
+    AuditTaskStatus.CLAIMED.value,
+    AuditTaskStatus.RUNNING.value,
+)
 
 PIPELINE_TOOL_NAME = "finding-pipeline"
 DYNAMIC_VERIFIER_NAME = "dynamic-verifier"
@@ -2813,8 +2819,46 @@ class DeterministicOrchestrator:
         self.session.refresh(audit_run, attribute_names=["status"])
         return audit_run.status == AuditRunStatus.CANCELLING.value
 
+    def _settle_open_tasks(
+        self,
+        run_id: UUID,
+        *,
+        status: AuditTaskStatus,
+        error_code: str | None,
+    ) -> None:
+        """Close the tasks a terminating run left in flight.
+
+        A task commits its own claim, so `running` outlives the pass that set
+        it. When an error escapes the stage that owns the task — the clearest
+        case being a resumed task whose sandbox the manager no longer knows, so
+        the lookup at the top of `_execute_profile` raises — the normal
+        `_queue_or_fail_task` settlement is never reached.
+
+        Nothing else would ever clear the row: the run is terminal by then, so
+        `_fail_run` returns early on every later pass, and the API's delete
+        guard refuses a run that still has an active task. Settling here is what
+        keeps a failed run deletable.
+        """
+
+        now = datetime.now(UTC)
+        for task in self.session.scalars(
+            select(AuditTask).where(
+                AuditTask.audit_run_id == run_id,
+                AuditTask.status.in_(_OPEN_TASK_STATUSES),
+            )
+        ):
+            task.status = status.value
+            task.finished_at = task.finished_at or now
+            if error_code and not task.error_code:
+                task.error_code = error_code
+
     def _cancel_run(self, audit_run: AuditRun) -> None:
         if audit_run.status == AuditRunStatus.CANCELLING.value:
+            self._settle_open_tasks(
+                audit_run.id,
+                status=AuditTaskStatus.CANCELLED,
+                error_code=None,
+            )
             AuditRunService(self.session).transition(
                 audit_run.id,
                 AuditRunStatus.CANCELLED,
@@ -2831,6 +2875,11 @@ class DeterministicOrchestrator:
             return
         audit_run.failure_code = error.error_code
         audit_run.failure_reason = error.message
+        self._settle_open_tasks(
+            run_id,
+            status=AuditTaskStatus.FAILED,
+            error_code=error.error_code,
+        )
         AuditRunService(self.session).transition(
             run_id,
             AuditRunStatus.FAILED,

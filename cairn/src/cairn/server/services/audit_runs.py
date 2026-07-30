@@ -352,19 +352,25 @@ class AuditRunService:
                 f"audit run in {current.value} must be cancelled before deletion",
                 error_code="audit_run_not_deletable",
             )
-        active_task = self.session.scalar(
-            select(AuditTask.id)
-            .where(
-                AuditTask.audit_run_id == run_id,
-                AuditTask.status.in_(_ACTIVE_TASK_STATUSES),
+        # Only `human_review` can hold work that is genuinely still owed: a
+        # queued reverify task there is waiting for the orchestrator to claim
+        # it. A run in a terminal status is not executing, so a task still
+        # marked active is a stale row — refusing on it would lock the run out
+        # of deletion permanently.
+        if current is AuditRunStatus.HUMAN_REVIEW:
+            active_task = self.session.scalar(
+                select(AuditTask.id)
+                .where(
+                    AuditTask.audit_run_id == run_id,
+                    AuditTask.status.in_(_ACTIVE_TASK_STATUSES),
+                )
+                .limit(1)
             )
-            .limit(1)
-        )
-        if active_task is not None:
-            raise ConflictError(
-                "audit run still has an active task",
-                error_code="audit_run_has_active_tasks",
-            )
+            if active_task is not None:
+                raise ConflictError(
+                    "audit run still has an active task",
+                    error_code="audit_run_has_active_tasks",
+                )
 
         self.session.delete(audit_run)
         try:

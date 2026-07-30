@@ -11,6 +11,8 @@ from cairn.server.domain.enums import (
     ArtifactKind,
     AuditLogAction,
     AuditRunStatus,
+    AuditTaskStatus,
+    AuditTaskType,
     BuildSystem,
     SnapshotStatus,
 )
@@ -20,6 +22,7 @@ from cairn.server.persistence.models import (
     AuditLogEntry,
     AuditRun,
     AuditRunStageEvent,
+    AuditTask,
     SourceSnapshot,
 )
 from cairn.server.services.audit_runs import AuditRunService
@@ -491,3 +494,74 @@ def test_deleting_a_run_removes_its_stage_entries(
             )
         ).all()
     assert remaining == []
+
+
+def test_failed_run_with_a_stale_running_task_can_still_be_deleted(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """A terminal run is not executing, so an active-looking task is stale.
+
+    Refusing on it locked the run out of deletion permanently: nothing settles
+    the row once the run is terminal.
+    """
+
+    repository = create_repository(client, "stale-task-delete")
+    policy = create_policy(client, "stale-task-delete-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+    with session_factory.begin() as session:
+        stored = session.get(AuditRun, UUID(run["id"]))
+        stored.status = AuditRunStatus.FAILED.value
+        stored.failure_code = "ANALYSIS_INTERNAL_FAILURE"
+        session.add(
+            AuditTask(
+                audit_run_id=UUID(run["id"]),
+                type=AuditTaskType.INVENTORY.value,
+                scope_key="deterministic:inventory",
+                scope={},
+                required_capabilities=["deterministic:inventory"],
+                status=AuditTaskStatus.RUNNING.value,
+                worker_name="deterministic-orchestrator",
+                attempt=3,
+                max_attempts=3,
+                timeout_seconds=900,
+            )
+        )
+
+    assert client.delete(f"/api/v1/audit-runs/{run['id']}").status_code == 204
+
+
+def test_review_run_with_a_queued_task_is_still_refused(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """`human_review` is the one deletable status that can owe real work.
+
+    A queued reverify task there is waiting for the orchestrator to claim it, so
+    the guard has to keep applying.
+    """
+
+    repository = create_repository(client, "review-task-delete")
+    policy = create_policy(client, "review-task-delete-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+    with session_factory.begin() as session:
+        stored = session.get(AuditRun, UUID(run["id"]))
+        stored.status = AuditRunStatus.HUMAN_REVIEW.value
+        session.add(
+            AuditTask(
+                audit_run_id=UUID(run["id"]),
+                type=AuditTaskType.INDEPENDENT_VERIFY.value,
+                scope_key="reverify:finding-1",
+                scope={},
+                required_capabilities=["verify:independent"],
+                status=AuditTaskStatus.QUEUED.value,
+                attempt=0,
+                max_attempts=3,
+                timeout_seconds=900,
+            )
+        )
+
+    response = client.delete(f"/api/v1/audit-runs/{run['id']}")
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "audit_run_has_active_tasks"
