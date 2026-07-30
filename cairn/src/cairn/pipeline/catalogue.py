@@ -59,6 +59,7 @@ OWASP_BY_CWE: dict[str, str] = {
     "CWE-639": "A01:2021 Broken Access Control",
     "CWE-798": "A07:2021 Identification and Authentication Failures",
     "CWE-829": "A08:2021 Software and Data Integrity Failures",
+    "CWE-862": "A01:2021 Broken Access Control",
     "CWE-863": "A01:2021 Broken Access Control",
     "CWE-915": "A08:2021 Software and Data Integrity Failures",
     "CWE-917": "A03:2021 Injection",
@@ -200,6 +201,11 @@ REMEDIATION_BY_CWE: dict[str, str] = {
     "CWE-829": (
         "只从配置好的内部镜像源解析依赖，固定版本并校验 checksum 或签名，"
         "使构建无法取到被替换过的制品。"
+    ),
+    "CWE-862": (
+        "为该入口补上缺失的授权检查，而不是依赖它没有被链接到 UI 上。"
+        "优先采用默认拒绝的过滤器链加显式放行规则，让新增端点在有人显式放行之前就已受保护；"
+        "并为这条规则补一个「去掉授权就会失败」的测试。"
     ),
     "CWE-863": (
         "修正授权判定本身，而不是在旁边再加一道检查。"

@@ -57,6 +57,11 @@ matcher actually covers, which annotations a proxy applies, whether an
 interceptor runs before the handler, what a MyBatis `${}` substitution emits,
 what a `@Transactional` boundary does and does not serialize.
 
+For authorization questions, call `describe_endpoint_authz` first: it gives the
+platform's deterministic view of which interceptors cover a route and whether an
+entrypoint is structurally unprotected. It reports structure, not correctness —
+still read the interceptor's code to judge whether its check can be bypassed.
+
 ## Evidence every candidate must carry
 
 - `locations`: file paths and line numbers, using paths exactly as the index

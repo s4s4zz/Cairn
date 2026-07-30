@@ -14,10 +14,12 @@ from cairn.analysis.bytecode_index import (
     BytecodeIndexFailure,
     build_bytecode_index,
 )
+from cairn.analysis.authz_topology import build_authz_topology
 from cairn.analysis.bytecode_sinks import bytecode_sink_candidates
 from cairn.analysis.config_rules import RULESET_VERSION, scan_config
 from cairn.analysis.execution import execute_build
 from cairn.analysis.indexer import build_inventory
+from cairn.analysis.normalizers import SourceCatalog
 from cairn.analysis.tooling import TOOL_SPECS, run_external_scanner
 from cairn.analysis.tree_hash import source_tree_sha256
 
@@ -107,12 +109,24 @@ def run_operation(
             reason_code="ANALYSIS_OPERATION_UNKNOWN",
         )
     if operation == "inventory":
+        inventory = build_inventory(source)
+        # The authorization topology (图二) is derived from the same inventory:
+        # bindings ride along in the inventory payload for the semantic broker,
+        # and structural-bypass candidates ride the manifest's candidate slot.
+        bindings, candidates = build_authz_topology(
+            inventory,
+            catalog=SourceCatalog(source),
+            snapshot_sha256=source_tree_sha256(source),
+        )
+        inventory["auth_bindings"] = bindings
         return _manifest(
             operation,
             status="completed",
             tool_name="cairn-java-inventory",
             tool_version="1.0.0",
-            inventory=build_inventory(source),
+            inventory=inventory,
+            candidates=candidates,
+            candidate_count=len(candidates),
         )
     if operation == "binary-inventory":
         try:

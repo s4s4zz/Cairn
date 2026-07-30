@@ -436,7 +436,7 @@ def test_an_unprobeable_category_is_never_runtime_rejected(
     audit_run, sandbox = drive(
         db_session,
         tmp_path,
-        candidates=[candidate_payload(category="authorization", cwe_ids=["CWE-285"])],
+        candidates=[candidate_payload(category="open-redirect", cwe_ids=["CWE-601"])],
     )
 
     assert sandbox.dynamic_requests == []

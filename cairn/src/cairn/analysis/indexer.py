@@ -72,6 +72,86 @@ _SOURCE_ANNOTATIONS = {
     "ModelAttribute": "http-model",
     "RequestPart": "http-upload",
 }
+# Class supertypes that make an object part of the request pipeline (图二).
+# Matched on the simple name; source may use the simple or qualified form.
+_FILTER_SUPERTYPES = frozenset(
+    {
+        "Filter",
+        "OncePerRequestFilter",
+        "GenericFilterBean",
+        "HttpFilter",
+        "DelegatingFilterProxy",
+        "AbstractAuthenticationProcessingFilter",
+    }
+)
+_INTERCEPTOR_SUPERTYPES = frozenset(
+    {
+        "HandlerInterceptor",
+        "AsyncHandlerInterceptor",
+        "WebRequestInterceptor",
+        "HandlerInterceptorAdapter",
+    }
+)
+_SECURITY_CHAIN_SUPERTYPES = frozenset({"WebSecurityConfigurerAdapter"})
+# A deliberately broad read of whether an interceptor authenticates at all.
+# A false positive only makes the topology treat an entrypoint as *covered*
+# (no structural candidate, handed to the semantic task), which is far safer
+# than a false "unprotected" claim that would become a high-confidence Finding.
+_AUTH_INTERCEPTOR_MARKERS = (
+    "auth",
+    "security",
+    "login",
+    "token",
+    "jwt",
+    "sso",
+    "permission",
+    "access",
+    "session",
+    "principal",
+    "oauth",
+    "saml",
+    "credential",
+    "guard",
+    "shiro",
+    "satoken",
+)
+_CLASS_SUPERTYPE_PATTERN = re.compile(
+    r"""(?x)
+    \bclass\s+([A-Za-z_$][\w$]*)\s*         # class name
+    (?:<[^{}]*>\s*)?                         # optional generics on the name
+    (?:extends\s+([\w$.]+(?:\s*<[^{}]*>)?)\s*)?  # optional superclass
+    (?:implements\s+([^{]+?)\s*)?           # optional interface list
+    \{
+    """
+)
+_STRING_LITERAL = re.compile(r"""["']([^"']+)["']""")
+
+
+def _filter_url_patterns(arguments: str | None) -> list[str]:
+    """Pull servlet URL patterns out of a ``@WebFilter`` annotation body.
+
+    Prefers an explicit ``urlPatterns=``/``value=`` assignment; falls back to
+    every string literal for the ``@WebFilter("/x")`` shorthand. A name-only
+    ``@WebFilter(filterName=...)`` carries no pattern here — the mapping lives
+    in ``web.xml`` or a ``FilterRegistrationBean`` — so it yields nothing.
+    """
+
+    if not arguments:
+        return []
+    assignment = re.search(
+        r"(?:urlPatterns|value)\s*=\s*(\{[^}]*\}|\"[^\"]*\"|'[^']*')", arguments
+    )
+    if assignment is not None:
+        focus = assignment.group(1)
+    elif re.search(r"\bfilterName\s*=", arguments):
+        focus = ""
+    else:
+        focus = arguments
+    return [
+        literal
+        for literal in _STRING_LITERAL.findall(focus)
+        if literal.startswith("/") or "*" in literal
+    ]
 _SINK_PATTERNS = (
     (
         re.compile(r"\b(?:Runtime\.getRuntime\(\)\.exec|new\s+ProcessBuilder)\b"),
@@ -301,6 +381,7 @@ def index_source(root: Path) -> dict[str, object]:
     root = root.resolve()
     symbols: list[dict[str, object]] = []
     entrypoints: list[dict[str, object]] = []
+    interceptors: list[dict[str, object]] = []
     permissions: list[dict[str, object]] = []
     sources: list[dict[str, object]] = []
     sinks: list[dict[str, object]] = []
@@ -486,6 +567,57 @@ def index_source(root: Path) -> dict[str, object]:
                 }
             )
 
+        for match in _CLASS_SUPERTYPE_PATTERN.finditer(stripped):
+            class_simple = match.group(1)
+            supers: set[str] = set()
+            if match.group(2):
+                supers.add(_annotation_name(match.group(2).split("<", 1)[0].strip()))
+            if match.group(3):
+                supers.update(
+                    _annotation_name(part.split("<", 1)[0].strip())
+                    for part in match.group(3).split(",")
+                    if part.strip()
+                )
+            if supers & _FILTER_SUPERTYPES:
+                kind = "servlet-filter"
+            elif supers & _INTERCEPTOR_SUPERTYPES:
+                kind = "spring-interceptor"
+            elif supers & _SECURITY_CHAIN_SUPERTYPES:
+                kind = "security-chain"
+            else:
+                continue
+            declaration_line = _line(stripped, match.start())
+            qualified = (
+                f"{package_name}.{class_simple}" if package_name else class_simple
+            )
+            url_patterns: list[str] = []
+            order: int | None = None
+            for annotation_line, annotation_name, annotation_args in annotations:
+                if annotation_line > declaration_line or annotation_line < declaration_line - 15:
+                    continue
+                if annotation_name == "WebFilter":
+                    url_patterns = _filter_url_patterns(annotation_args)
+                elif annotation_name == "Order":
+                    digits = re.search(r"-?\d+", annotation_args or "")
+                    order = int(digits.group()) if digits else None
+            lowered = qualified.lower()
+            enforces_auth = kind == "security-chain" or any(
+                marker in lowered for marker in _AUTH_INTERCEPTOR_MARKERS
+            )
+            interceptors.append(
+                {
+                    "kind": kind,
+                    "class_name": qualified,
+                    "url_patterns": sorted(set(url_patterns)),
+                    "dispatcher_types": [],
+                    "order": order,
+                    "enforces_auth": enforces_auth,
+                    "source": "annotation",
+                    "path": relative,
+                    "line": declaration_line,
+                }
+            )
+
     key = lambda item: (  # noqa: E731
         str(item.get("path", "")).encode("utf-8"),
         int(item.get("line", 0)),
@@ -495,6 +627,14 @@ def index_source(root: Path) -> dict[str, object]:
     return {
         "symbols": sorted(symbols, key=key),
         "entrypoints": sorted(entrypoints, key=key),
+        "interceptors": sorted(
+            interceptors,
+            key=lambda item: (
+                str(item["path"]).encode("utf-8"),
+                int(item["line"]),
+                str(item["class_name"]),
+            ),
+        ),
         "permissions": sorted(permissions, key=key),
         "sources": sorted(sources, key=key),
         "sinks": sorted(sinks, key=key),
@@ -514,7 +654,19 @@ def index_source(root: Path) -> dict[str, object]:
 def build_inventory(root: Path) -> dict[str, object]:
     from cairn.analysis.buildplan import detect_build_plan
     from cairn.analysis.project import detect_project
+    from cairn.analysis.webxml import parse_web_descriptors
 
     project = detect_project(root)
     index = index_source(root)
+    # Interceptors come from two sources: annotation/supertype evidence in the
+    # source index, and XML descriptors (web.xml, Spring Security config). Merge
+    # them into one deterministic list before the topology consumes it.
+    index["interceptors"] = sorted(
+        [*index.get("interceptors", []), *parse_web_descriptors(root)],
+        key=lambda item: (
+            str(item["path"]).encode("utf-8"),
+            int(item["line"]),
+            str(item["class_name"]),
+        ),
+    )
     return {**project, **index, "runtime_plan": detect_build_plan(root).as_payload()}

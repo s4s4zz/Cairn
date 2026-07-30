@@ -354,6 +354,49 @@ class PermissionRecord(StrictModel):
     expression: str | None = Field(default=None, max_length=4096)
 
 
+class InterceptorRecord(StrictModel):
+    """One member of the request pipeline that can gate an entrypoint (图二).
+
+    A servlet ``Filter``, a Spring ``HandlerInterceptor``, or a member of a
+    Spring Security filter chain — whatever the container runs before the
+    handler. ``enforces_auth`` is the deterministic topology's conservative
+    read of whether this interceptor performs authentication/authorization at
+    all; whether its logic is *correct* is a semantic question, never decided
+    here.
+    """
+
+    kind: Literal["servlet-filter", "spring-interceptor", "security-chain", "custom"]
+    class_name: str = Field(min_length=1, max_length=2048)
+    url_patterns: list[str] = Field(default_factory=list, max_length=256)
+    dispatcher_types: list[str] = Field(default_factory=list, max_length=8)
+    order: int | None = None
+    enforces_auth: bool = False
+    source: Literal["web.xml", "annotation", "java-config", "xml-config"]
+    path: RelativePath
+    line: int = Field(ge=1)
+
+
+class AuthBinding(StrictModel):
+    """How the deterministic topology sees one entrypoint's authorization (图二).
+
+    ``covered_by`` lists the ``class_name`` of every auth-enforcing interceptor
+    whose URL patterns match this entrypoint's route; ``declared_auth`` carries
+    method/class-level annotation expressions (e.g. ``hasRole('ADMIN')``).
+    ``unprotected`` is set only for a *structural* gap — no matching auth
+    interceptor and no auth annotation — which is exactly the deterministic
+    bypass the platform is entitled to claim without reading any handler body.
+    """
+
+    entrypoint_path: RelativePath
+    entrypoint_line: int = Field(ge=1)
+    entrypoint_symbol: str | None = Field(default=None, max_length=1024)
+    route: str | None = Field(default=None, max_length=2048)
+    covered_by: list[str] = Field(default_factory=list, max_length=64)
+    declared_auth: list[str] = Field(default_factory=list, max_length=32)
+    unprotected: bool = False
+    reason: str | None = Field(default=None, max_length=512)
+
+
 class DataFlowRecord(StrictModel):
     path: RelativePath
     line: int = Field(ge=1)
@@ -394,6 +437,8 @@ class InventoryResult(StrictModel):
     symbols: list[SymbolRecord]
     entrypoints: list[EntrypointRecord]
     permissions: list[PermissionRecord]
+    interceptors: list[InterceptorRecord] = Field(default_factory=list)
+    auth_bindings: list[AuthBinding] = Field(default_factory=list)
     sources: list[DataFlowRecord]
     sinks: list[DataFlowRecord]
     classified_paths: list[PathClassification]

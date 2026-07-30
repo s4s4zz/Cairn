@@ -371,6 +371,29 @@ class DeterministicOrchestrator:
             coverage.sensitive_sinks_analyzed = 0
             coverage.skipped_paths = list(data.skipped_paths)
             coverage.unsupported_components = list(data.unsupported_components)
+            # Structural authorization-bypass candidates (图二) ride the
+            # inventory manifest; persist them into the candidate facts exactly
+            # as scanners do, and record the auth topology's coverage.
+            authz_candidates = [
+                candidate.model_dump(mode="json")
+                for candidate in inventory.candidates
+            ]
+            if authz_candidates:
+                self._persist_candidates(
+                    audit_run,
+                    inventory_task,
+                    authz_candidates,
+                    inventory_artifacts,
+                )
+            coverage.sensitive_sinks_total += len(authz_candidates)
+            coverage.entrypoints_auth_unprotected = sum(
+                1 for binding in data.auth_bindings if binding.unprotected
+            )
+            coverage.entrypoints_auth_covered = sum(
+                1
+                for binding in data.auth_bindings
+                if binding.covered_by or binding.declared_auth
+            )
 
         if has_bytecode:
             self._preprocess_bytecode(audit_run, coverage)
@@ -2636,6 +2659,8 @@ class DeterministicOrchestrator:
                 "runtime_plan": inventory.get("runtime_plan", {}),
                 "symbols": inventory["symbols"],
                 "permissions": inventory["permissions"],
+                "interceptors": inventory.get("interceptors", []),
+                "auth_bindings": inventory.get("auth_bindings", []),
                 "classified_paths": inventory["classified_paths"],
             },
             AuditFactKind.ENTRYPOINT: {"items": inventory["entrypoints"]},

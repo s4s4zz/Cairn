@@ -183,7 +183,7 @@ def test_an_unknown_route_is_inconclusive() -> None:
 
 
 def test_a_category_with_no_probe_is_inconclusive() -> None:
-    outcome, _ = run("authorization")
+    outcome, _ = run("open-redirect")
 
     assert outcome.verdict == "inconclusive"
     assert outcome.reason_code == REASON_CATEGORY_UNSUPPORTED
@@ -281,4 +281,5 @@ def test_only_categories_with_a_real_probe_are_advertised() -> None:
         "ssrf",
         "xxe",
         "command-execution",
+        "authorization",
     }

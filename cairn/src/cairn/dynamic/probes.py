@@ -38,7 +38,9 @@ import urllib.request
 from cairn.dynamic.contracts import (
     MAX_BODY_EXCERPT,
     REASON_CATEGORY_UNSUPPORTED,
+    REASON_LOGIN_RESPONSE,
     REASON_REQUEST_FAILED,
+    REASON_RESPONSE_UNCLEAR,
     REASON_ROUTE_UNKNOWN,
     HttpExchange,
     ProbeOutcome,
@@ -59,6 +61,20 @@ SQL_ERROR_MARKERS = (
     "you have an error in your sql syntax",
     "org.postgresql.util.psqlexception",
     "java.sql.sqlsyntaxerrorexception",
+)
+
+# Body markers suggesting an unauthenticated request was bounced to a login
+# page (often served 200 after a redirect), so a 2xx is not proof of access.
+_LOGIN_MARKERS = (
+    "login",
+    "signin",
+    "sign in",
+    "j_username",
+    "j_password",
+    'type="password"',
+    "authentication required",
+    "please log in",
+    "log in to continue",
 )
 
 BASELINE_VALUE = "1"
@@ -471,6 +487,52 @@ class ProbeRunner:
             "该取值看起来不会进入 shell。",
         )
 
+    def _probe_unauthenticated(
+        self,
+        target: ProbeTarget,
+        routes: tuple[str, ...],
+    ) -> ProbeOutcome:
+        # No differential: the platform's own client sends no credentials, so a
+        # single request already asks "can an unauthenticated caller reach this?"
+        located = self._baseline(target, routes)
+        if located is None:
+            return _route_not_served(target)
+        _route, exchange, body = located
+        status = exchange.status_code or 0
+        if status in (401, 403):
+            return _rejected(
+                target,
+                exchange,
+                exchange,
+                f"未携带任何凭证的请求被拒绝（HTTP {status}），说明该入口的鉴权拦截生效。",
+            )
+        if 200 <= status < 300:
+            lowered = body.lower()
+            if any(marker in lowered for marker in _LOGIN_MARKERS):
+                return _inconclusive(
+                    target,
+                    REASON_LOGIN_RESPONSE,
+                    "未携带凭证的请求返回了 2xx，但响应内容疑似登录页，"
+                    "无法据此判定为未授权可达。",
+                    baseline=exchange,
+                    payload=exchange,
+                )
+            return _confirmed(
+                target,
+                exchange,
+                exchange,
+                f"未携带任何认证凭证的请求返回了 HTTP {status} 的实质响应（非登录页），"
+                "说明该入口无需认证即可访问。",
+            )
+        return _inconclusive(
+            target,
+            REASON_RESPONSE_UNCLEAR,
+            f"未携带凭证的请求返回 HTTP {status}，既非明确拒绝也非成功响应，"
+            "无法判定未授权可达性。",
+            baseline=exchange,
+            payload=exchange,
+        )
+
 
 def _diverged(baseline: HttpExchange, payload: HttpExchange) -> bool:
     """A response difference a literal value did not produce."""
@@ -583,6 +645,7 @@ _HANDLERS: dict[str, Callable[[ProbeRunner, ProbeTarget, tuple[str, ...]], Probe
     "ssrf": ProbeRunner._probe_ssrf,
     "xxe": ProbeRunner._probe_xxe,
     "command-execution": ProbeRunner._probe_command_execution,
+    "authorization": ProbeRunner._probe_unauthenticated,
 }
 
 PROBEABLE_CATEGORIES = frozenset(_HANDLERS)

@@ -118,6 +118,12 @@ class AuditCoverage(Base):
     java_files_analyzed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     entrypoints_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     entrypoints_analyzed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entrypoints_auth_covered: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    entrypoints_auth_unprotected: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     sensitive_sinks_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sensitive_sinks_analyzed: Mapped[int] = mapped_column(
         Integer,

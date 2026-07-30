@@ -132,6 +132,7 @@ class BrokerError(Exception):
 
 TOOL_NAMES: frozenset[str] = frozenset(
     {
+        "describe_endpoint_authz",
         "find_symbol",
         "list_entrypoints",
         "list_modules",
@@ -396,6 +397,47 @@ _TOOL_SPECS: tuple[_ToolSpec, ...] = (
             ),
         ),
         handler="_list_sinks",
+    ),
+    _ToolSpec(
+        name="describe_endpoint_authz",
+        description=(
+            "Report the deterministic authorization topology (图二) for HTTP "
+            "entrypoints: which auth-enforcing interceptors' URL patterns cover "
+            "an entrypoint, which authorization annotations it declares, and "
+            "whether the platform found it structurally unprotected. Also lists "
+            "the interceptors themselves so you can read their code. Pass "
+            "'route' or 'symbol' to select entrypoints; omit both for every "
+            "binding (bounded). This is a STRUCTURAL view: 'covered_by' means a "
+            "pattern matches the route, NOT that the interceptor's logic is "
+            "correct — read the interceptor to judge bypassability, and treat a "
+            "missing binding as unknown rather than as proof of protection."
+        ),
+        parameters=(
+            _Param(
+                name="route",
+                schema={
+                    "type": ["string", "null"],
+                    "description": (
+                        "Substring matched against entrypoint routes, e.g. "
+                        "'/admin'. Null selects entrypoints regardless of route."
+                    ),
+                },
+                required_argument=False,
+            ),
+            _Param(
+                name="symbol",
+                schema={
+                    "type": ["string", "null"],
+                    "description": (
+                        "Substring matched against the entrypoint symbol (a "
+                        "controller class or handler method). Null does not "
+                        "filter by symbol."
+                    ),
+                },
+                required_argument=False,
+            ),
+        ),
+        handler="_describe_endpoint_authz",
     ),
 )
 
@@ -662,6 +704,7 @@ class ToolBroker:
         self._inventory: dict[str, object] | None = (
             dict(inventory) if inventory is not None else None
         )
+        self._auth_bindings_cache: list[dict[str, object]] | None = None
         self._call_count = 0
 
     # -- lifecycle ---------------------------------------------------------
@@ -1545,6 +1588,99 @@ class ToolBroker:
                 "sink does not exist; confirm by reading the code."
             ),
         }
+
+    def _describe_endpoint_authz(
+        self,
+        arguments: Mapping[str, object],
+    ) -> dict[str, object]:
+        route = (
+            _text(arguments.get("route"))
+            if arguments.get("route") is not None
+            else None
+        )
+        symbol = (
+            _text(arguments.get("symbol"))
+            if arguments.get("symbol") is not None
+            else None
+        )
+        selected: list[dict[str, object]] = []
+        for binding in self._auth_bindings():
+            binding_route = str(binding.get("route") or "")
+            binding_symbol = str(binding.get("entrypoint_symbol") or "")
+            if route and route not in binding_route:
+                continue
+            if symbol and symbol not in binding_symbol:
+                continue
+            selected.append(
+                {
+                    "path": _text(binding.get("entrypoint_path"), limit=MAX_PATH_LENGTH),
+                    "line": int(binding.get("entrypoint_line") or 1),
+                    "route": _text(binding.get("route")),
+                    "symbol": _text(binding.get("entrypoint_symbol")),
+                    "covered_by": _string_list(binding.get("covered_by")),
+                    "declared_auth": _string_list(binding.get("declared_auth")),
+                    "unprotected": bool(binding.get("unprotected")),
+                    "reason": _text(binding.get("reason")),
+                }
+            )
+        selected.sort(key=_sort_key)
+        kept, meta = _bounded(
+            selected,
+            limit=MAX_ENTRYPOINTS,
+            label="bindings",
+            advice="Pass 'route' or 'symbol' to narrow the result.",
+        )
+        interceptors = sorted(
+            (
+                {
+                    "kind": _text(record.get("kind"), limit=64),
+                    "class_name": _text(record.get("class_name")),
+                    "url_patterns": _string_list(record.get("url_patterns")),
+                    "enforces_auth": bool(record.get("enforces_auth")),
+                    "source": _text(record.get("source"), limit=32),
+                    "path": _text(record.get("path"), limit=MAX_PATH_LENGTH),
+                    "line": _line_of(record),
+                }
+                for record in self._records("interceptors")
+            ),
+            key=_sort_key,
+        )
+        return {
+            "bindings": kept,
+            **meta,
+            "interceptors": interceptors[:MAX_ENTRYPOINTS],
+            "notes": (
+                "Structural authorization topology only. 'covered_by' means an "
+                "interceptor's URL pattern matches the route, NOT that its check "
+                "is sound — read the interceptor to judge whether it can be "
+                "bypassed. 'unprotected' is a structural gap (no matching auth "
+                "interceptor and no auth annotation); a missing binding is "
+                "unknown, not proof of protection."
+            ),
+        }
+
+    def _auth_bindings(self) -> list[dict[str, object]]:
+        """Authorization bindings for this Snapshot (图二).
+
+        Prefers bindings already in the inventory payload; when absent — the
+        broker built the inventory itself, which does not carry the topology —
+        they are derived once from the same records and cached.
+        """
+
+        existing = self._records("auth_bindings")
+        if existing:
+            return existing
+        if self._auth_bindings_cache is None:
+            from cairn.analysis.authz_topology import build_authz_topology
+            from cairn.analysis.tree_hash import source_tree_sha256
+
+            bindings, _ = build_authz_topology(
+                self._index(),
+                catalog=self.catalog,
+                snapshot_sha256=source_tree_sha256(self._source_root),
+            )
+            self._auth_bindings_cache = bindings
+        return self._auth_bindings_cache
 
 
 _SPECS_BY_NAME: dict[str, _ToolSpec] = {spec.name: spec for spec in _TOOL_SPECS}
