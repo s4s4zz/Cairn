@@ -503,6 +503,9 @@ class BinaryResource(StrictModel):
     kind: str = Field(min_length=1, max_length=128)
     sha256: Sha256
     size_bytes: int = Field(ge=0)
+    # Deployment descriptors (web.xml) and Spring Security XML keep their text
+    # for the bytecode authorization topology (图二 v2); other resources do not.
+    content: str | None = Field(default=None, max_length=262_144)
 
 
 class BinaryCoverageGap(StrictModel):
@@ -537,6 +540,18 @@ class BinaryInventoryResult(StrictModel):
         return self
 
 
+class AnnotationDetail(StrictModel):
+    """One annotation with its string-valued members (图二 v2).
+
+    The values the ASM indexer captured from a bytecode annotation — enough for
+    route, urlPatterns, @Order and authorization expressions. Values are
+    stringified; an array member becomes a list. Nested annotations are skipped.
+    """
+
+    descriptor: str = Field(min_length=1, max_length=2048)
+    members: dict[str, str | list[str]] = Field(default_factory=dict)
+
+
 class BytecodeClassRecord(StrictModel):
     logical_path: str = Field(min_length=1, max_length=4096)
     container_path: str | None = Field(default=None, max_length=4096)
@@ -550,6 +565,9 @@ class BytecodeClassRecord(StrictModel):
     signature: str | None = Field(default=None, max_length=8192)
     source_file: str | None = Field(default=None, max_length=1024)
     annotations: list[str] = Field(default_factory=list, max_length=4096)
+    annotation_details: list[AnnotationDetail] = Field(
+        default_factory=list, max_length=4096
+    )
 
 
 class BytecodeMethodRecord(StrictModel):
@@ -564,6 +582,9 @@ class BytecodeMethodRecord(StrictModel):
     signature: str | None = Field(default=None, max_length=8192)
     exceptions: list[str] = Field(default_factory=list, max_length=1024)
     annotations: list[str] = Field(default_factory=list, max_length=4096)
+    annotation_details: list[AnnotationDetail] = Field(
+        default_factory=list, max_length=4096
+    )
     start_line: int | None = Field(default=None, ge=1)
     end_line: int | None = Field(default=None, ge=1)
     first_bytecode_offset: int | None = Field(default=None, ge=0)

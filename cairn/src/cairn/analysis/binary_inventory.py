@@ -491,6 +491,17 @@ def _visit_archive(
                             "sha256": digest,
                             "size_bytes": info.file_size,
                         }
+                        # Keep the text of XML descriptors so the bytecode
+                        # authorization topology can parse web.xml / Spring
+                        # Security rules without re-opening the archive.
+                        if (
+                            resource_kind in _DESCRIPTOR_KINDS
+                            and info.file_size <= _MAX_DESCRIPTOR_BYTES
+                        ):
+                            payload.seek(0)
+                            resource["content"] = payload.read(
+                                _MAX_DESCRIPTOR_BYTES
+                            ).decode("utf-8", errors="replace")
                         state.resources.append(resource)
                         _append_entry(
                             state,
@@ -819,6 +830,10 @@ def _select_multi_release(
                     ),
                 }
             )
+
+
+_DESCRIPTOR_KINDS = frozenset({"deployment-descriptor", "xml"})
+_MAX_DESCRIPTOR_BYTES = 256 * 1024
 
 
 def _resource_kind(path: str) -> str | None:

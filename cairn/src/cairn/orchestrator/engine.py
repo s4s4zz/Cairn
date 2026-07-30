@@ -16,6 +16,7 @@ from cairn.analysis.contracts import (
     ProgramIndexV2,
     ToolStatus,
 )
+from cairn.analysis.authz_topology import build_authz_topology_bytecode
 from cairn.analysis.fingerprints import merge_candidates
 from cairn.gateway.config import read_key_file
 from cairn.gateway.tokens import ModelGrant, mint_grant
@@ -560,6 +561,27 @@ class DeterministicOrchestrator:
                 index_artifacts,
             )
         coverage.sensitive_sinks_total += len(candidates)
+        # Authorization topology (图二 v2): structural-bypass candidates derived
+        # from the bytecode index's annotations/supertypes plus web.xml
+        # descriptors, persisted the same way as the scanner candidates.
+        authz_bindings, authz_candidates = build_authz_topology_bytecode(
+            index,
+            descriptors=inventory.resources,
+            snapshot_sha256=audit_run.snapshot.content_sha256,
+        )
+        if authz_candidates:
+            self._persist_candidates(
+                audit_run, index_task, authz_candidates, index_artifacts
+            )
+        coverage.sensitive_sinks_total += len(authz_candidates)
+        coverage.entrypoints_auth_unprotected += sum(
+            1 for binding in authz_bindings if binding["unprotected"]
+        )
+        coverage.entrypoints_auth_covered += sum(
+            1
+            for binding in authz_bindings
+            if binding["covered_by"] or binding["declared_auth"]
+        )
         completed[AnalysisOperation.BYTECODE_INDEX.value] = self._tool_coverage(
             index_task,
             status=index_manifest.status,

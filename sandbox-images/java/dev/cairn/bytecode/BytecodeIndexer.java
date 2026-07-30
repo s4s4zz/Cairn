@@ -120,6 +120,7 @@ public final class BytecodeIndexer {
         private final Input input;
         private final BufferedWriter writer;
         private final List<String> annotations = new ArrayList<>();
+        private final List<Map<String, Object>> annotationDetails = new ArrayList<>();
         private String className;
         private String superName;
         private List<String> interfaces = List.of();
@@ -159,7 +160,7 @@ public final class BytecodeIndexer {
         @Override
         public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) {
             annotations.add(descriptor);
-            return null;
+            return new AnnotationValueVisitor(descriptor, annotationDetails);
         }
 
         @Override
@@ -207,6 +208,7 @@ public final class BytecodeIndexer {
             record.put("signature", signature);
             record.put("source_file", sourceFile);
             record.put("annotations", sorted(annotations));
+            record.put("annotation_details", annotationDetails);
             writeUnchecked(writer, record);
         }
     }
@@ -222,6 +224,7 @@ public final class BytecodeIndexer {
         private final String signature;
         private final List<String> exceptions;
         private final List<String> annotations = new ArrayList<>();
+        private final List<Map<String, Object>> annotationDetails = new ArrayList<>();
         private int startLine = Integer.MAX_VALUE;
         private int endLine = -1;
         private int currentLine = -1;
@@ -253,7 +256,7 @@ public final class BytecodeIndexer {
         @Override
         public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) {
             annotations.add(descriptor);
-            return null;
+            return new AnnotationValueVisitor(descriptor, annotationDetails);
         }
 
         @Override
@@ -344,6 +347,7 @@ public final class BytecodeIndexer {
             record.put("signature", signature);
             record.put("exceptions", exceptions);
             record.put("annotations", sorted(annotations));
+            record.put("annotation_details", annotationDetails);
             record.put("start_line", startLine == Integer.MAX_VALUE ? null : startLine);
             record.put("end_line", endLine < 0 ? null : endLine);
             record.put("first_bytecode_offset", firstOffset == Integer.MAX_VALUE ? null : firstOffset);
@@ -361,6 +365,76 @@ public final class BytecodeIndexer {
         private Integer nullableLine() {
             return currentLine < 0 ? null : currentLine;
         }
+    }
+
+    private static final class AnnotationValueVisitor extends AnnotationVisitor {
+        private final String descriptor;
+        private final List<Map<String, Object>> sink;
+        private final Map<String, Object> members = new LinkedHashMap<>();
+
+        AnnotationValueVisitor(String descriptor, List<Map<String, Object>> sink) {
+            super(API);
+            this.descriptor = descriptor;
+            this.sink = sink;
+        }
+
+        @Override
+        public void visit(String name, Object value) {
+            if (name != null) {
+                members.put(name, stringify(value));
+            }
+        }
+
+        @Override
+        public void visitEnum(String name, String enumDescriptor, String value) {
+            if (name != null) {
+                members.put(name, value);
+            }
+        }
+
+        @Override
+        public AnnotationVisitor visitArray(String name) {
+            List<String> values = new ArrayList<>();
+            return new AnnotationVisitor(API) {
+                @Override
+                public void visit(String member, Object value) {
+                    values.add(stringify(value));
+                }
+
+                @Override
+                public void visitEnum(String member, String enumDescriptor, String value) {
+                    values.add(value);
+                }
+
+                @Override
+                public void visitEnd() {
+                    if (name != null) {
+                        members.put(name, values);
+                    }
+                }
+            };
+        }
+
+        @Override
+        public AnnotationVisitor visitAnnotation(String name, String nestedDescriptor) {
+            // Nested annotations are not needed by the authorization topology.
+            return null;
+        }
+
+        @Override
+        public void visitEnd() {
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("descriptor", descriptor);
+            detail.put("members", members);
+            sink.add(detail);
+        }
+    }
+
+    private static String stringify(Object value) {
+        if (value instanceof Type type) {
+            return type.getClassName();
+        }
+        return String.valueOf(value);
     }
 
     private static String edgeKind(int opcode) {

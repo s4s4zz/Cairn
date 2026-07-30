@@ -95,6 +95,25 @@ def parse_web_descriptors(root: Path) -> list[dict[str, object]]:
     )
 
 
+def parse_descriptor_content(
+    content: str, logical_path: str
+) -> list[dict[str, object]]:
+    """Parse one XML descriptor's text into `InterceptorRecord`-shaped dicts.
+
+    For the bytecode path (图二 v2), where web.xml / Spring Security XML arrive
+    as text extracted from an archive rather than as files on disk.
+    """
+
+    try:
+        tree = ElementTree.fromstring(content)
+    except ElementTree.ParseError:
+        return []
+    name = logical_path.rsplit("/", 1)[-1].lower()
+    if name == "web.xml":
+        return _parse_web_xml(tree, logical_path)
+    return _parse_spring_security(tree, logical_path)
+
+
 def _parse_web_xml(tree: ElementTree.Element, relative: str) -> list[dict[str, object]]:
     filters: dict[str, str] = {}
     mappings: dict[str, tuple[list[str], list[str]]] = {}
