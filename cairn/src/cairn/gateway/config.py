@@ -12,7 +12,6 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from cairn.model_provider import normalize_provider_base_url
 
 DEFAULT_MODEL_ALLOWLIST = ("claude-opus-5", "claude-opus-4-8")
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 class GatewaySettings(BaseSettings):

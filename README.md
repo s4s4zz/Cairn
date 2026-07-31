@@ -494,7 +494,7 @@ Compose 部署应通过只读 Docker Secret 或 Compose override 将密钥挂载
 - analysis 模板无网络；build 默认无网络且只能由管理员绑定固定依赖代理网络；validation 使用 Manager 创建的隔离网络；
 - 扫描器只能使用镜像内置规则和离线数据库，缺失资产显式标记为 `unavailable`；
 - 长期模型 API Key 由管理员页面提交，API 使用 AES-256-GCM 加密后写入独立配置文件；可信 Admin API 仅在更新/枚举模型时解密，Gateway 仅在推理出口解密。Worker 只持有绑定 AuditRun/Worker/模型/有效期的短期 Grant，日志不记录 Prompt 正文、响应内容或密钥；
-- Gateway 同时接入内部 `cairn-analysis-net` 与专用出口网络 `cairn-llm-egress`，但不接入 `cairn-control`，因此既不可达 PostgreSQL 也不可达 Artifact Store；上游 origin 在非 loopback 情况下强制 HTTPS，且出口不跟随重定向；
+- Gateway 同时接入内部 `cairn-analysis-net` 与专用出口网络 `cairn-llm-egress`，但不接入 `cairn-control`，因此既不可达 PostgreSQL 也不可达 Artifact Store；上游 origin 允许明文 HTTP 以支持自建网关（长期 Key 与 Prompt 会以明文经过该链路，其传输安全由部署者保证，例如仅在受信内网或 VPN 内暴露），且出口不跟随重定向；
 - 语义审计代理与独立复核代理都只能使用只读 Tool Broker 提供的闭集工具，没有 Shell、写权限和通用网络；仓库内的代理指令文件、代码注释、测试数据和构建日志一律按不可信数据处理；
 - 独立复核代理拿不到原发现者的推理：其线上契约（`VerifyCandidateSpec`）只声明类别、CWE、Sink、模块与代码位置五类字段并禁止额外字段，因此任何携带 `message`/`call_chain`/`controllability` 的请求都是校验错误；原发现 Worker 不得复核同一 Finding，严重与高危 Finding 未经机器复核不得进入人工队列；
 - `semantic` 镜像不含 JDK、Maven、Gradle、Semgrep、git、curl、wget、uv 和 pip；Grant 与审计范围只能经由唯一的闭合类型化请求块进入容器，容器内的 runner 在构造客户端后立即从环境中删除 Grant；

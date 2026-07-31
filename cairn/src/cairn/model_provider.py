@@ -34,7 +34,6 @@ DEFAULT_PROVIDER_URLS: dict[ModelProvider, str] = {
     ModelProvider.ANTHROPIC_KEY: "https://api.anthropic.com",
 }
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _CONFIG_VERSION = 1
 _KEY_VERSION = 1
 
@@ -67,6 +66,19 @@ def load_model_config_key(path: Path | None) -> bytes:
 
 
 def normalize_provider_base_url(value: str) -> str:
+    """Validate and canonicalize a provider origin.
+
+    Plaintext `http://` is accepted at any host: self-hosted gateways commonly
+    listen on a LAN address without a certificate, and rejecting them made the
+    workbench unusable against them. The API key and every prompt therefore
+    ride whatever transport the operator names, so a plaintext origin must be
+    reachable only over a network the deployment already trusts.
+
+    The remaining checks stand — an origin carrying embedded credentials, a
+    query, a fragment, or a traversable path is a misconfiguration whatever the
+    scheme.
+    """
+
     normalized = value.strip().rstrip("/")
     parsed = urlsplit(normalized)
     if (
@@ -80,8 +92,6 @@ def normalize_provider_base_url(value: str) -> str:
         raise ValueError("base_url must be an HTTP(S) service URL")
     if any(part in {".", ".."} for part in parsed.path.split("/")):
         raise ValueError("base_url path must be normalized")
-    if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS:
-        raise ValueError("base_url must use HTTPS outside loopback")
     return normalized
 
 

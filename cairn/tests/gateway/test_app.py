@@ -759,19 +759,31 @@ def test_an_upstream_redirect_is_an_error_rather_than_a_second_request(
     assert len(session.calls) == 1
 
 
-def test_a_plaintext_upstream_origin_is_refused_outside_loopback(
-    tmp_path: Path,
-) -> None:
-    """The long-term key rides this leg, and cairn-llm-egress is not internal."""
+def test_a_plaintext_upstream_origin_is_permitted(tmp_path: Path) -> None:
+    """Self-hosted gateways listen on a LAN address without a certificate.
 
-    with pytest.raises(ValidationError):
-        make_settings(tmp_path, upstream_base_url="http://api.anthropic.com")
+    The long-term key rides this leg in the clear, so the deployment owns the
+    transport — but refusing the origin outright made those gateways unusable.
+    """
+
+    settings = make_settings(tmp_path, upstream_base_url="http://192.168.1.9:3000")
+
+    assert settings.upstream_base_url == "http://192.168.1.9:3000"
 
 
 def test_a_loopback_plaintext_origin_is_permitted(tmp_path: Path) -> None:
     settings = make_settings(tmp_path, upstream_base_url="http://127.0.0.1:8999")
 
     assert settings.upstream_base_url == "http://127.0.0.1:8999"
+
+
+def test_an_upstream_origin_carrying_credentials_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """Relaxing the scheme did not relax the rest of the origin checks."""
+
+    with pytest.raises(ValidationError):
+        make_settings(tmp_path, upstream_base_url="http://user:pw@gateway.internal")
 
 
 def test_server_side_tools_are_refused_before_any_egress(

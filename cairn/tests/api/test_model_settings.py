@@ -98,8 +98,8 @@ def test_admin_can_enumerate_models_with_an_unsaved_key(
     [
         ("", "at least 1 character"),
         ("api.example.com", "must be an HTTP(S) service URL"),
-        ("http://192.168.1.9:3000", "must use HTTPS outside loopback"),
         ("https://gateway.example.com/v1?beta=1", "must be an HTTP(S) service URL"),
+        ("http://user:pw@gateway.example.com", "must be an HTTP(S) service URL"),
     ],
 )
 def test_rejected_discovery_names_the_base_url_it_could_not_accept(
@@ -141,3 +141,47 @@ def test_rejected_discovery_never_echoes_the_key_that_failed_validation(
     assert response.status_code == 422
     assert "sk-far-too-long-secret" not in response.text
     assert "api_key" in response.json()["message"]
+
+
+def test_a_plaintext_lan_gateway_can_be_enumerated_and_saved(
+    admin_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Self-hosted gateways rarely hold a certificate for their LAN address."""
+
+    captured = {}
+
+    def fake_list(configuration, *, timeout_seconds):  # noqa: ANN001
+        del timeout_seconds
+        captured["base_url"] = configuration.metadata.base_url
+        return [{"id": "qwen3-coder", "display_name": None}]
+
+    monkeypatch.setattr(
+        "cairn.server.services.model_settings.list_provider_models",
+        fake_list,
+    )
+
+    discovered = admin_client.post(
+        "/api/v1/model-provider/models",
+        json={
+            "provider": "anthropic",
+            "base_url": "http://192.168.1.9:3000/",
+            "api_key": "sk-lan-gateway-secret",
+        },
+    )
+    saved = admin_client.put(
+        "/api/v1/model-provider",
+        json={
+            "provider": "anthropic",
+            "base_url": "http://192.168.1.9:3000",
+            "model": "qwen3-coder",
+            "api_key": "sk-lan-gateway-secret",
+        },
+    )
+
+    assert discovered.status_code == 200
+    assert discovered.json() == {"models": [{"id": "qwen3-coder", "display_name": None}]}
+    # The trailing slash is normalized away before the origin is used or stored.
+    assert captured["base_url"] == "http://192.168.1.9:3000"
+    assert saved.status_code == 200
+    assert saved.json()["base_url"] == "http://192.168.1.9:3000"

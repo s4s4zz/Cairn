@@ -82,12 +82,16 @@ def test_provider_urls_support_service_origins_and_existing_v1_prefixes() -> Non
     assert provider_endpoint("https://example.invalid/v1", "/v1/models") == (
         "https://example.invalid/v1/models"
     )
+    # A self-hosted gateway on a LAN address rarely carries a certificate, so
+    # plaintext is accepted and the operator owns the transport decision.
+    assert normalize_provider_base_url("http://192.168.1.9:3000/") == (
+        "http://192.168.1.9:3000"
+    )
 
 
 @pytest.mark.parametrize(
     "url",
     [
-        "http://api.openai.com",
         "https://user:secret@example.invalid",
         "https://example.invalid/path?query=yes",
         "file:///tmp/provider",
