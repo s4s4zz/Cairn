@@ -63,6 +63,28 @@ def ensure_request_id(request: Request) -> str:
     return request_id
 
 
+_MAX_REPORTED_ERRORS = 3
+_MAX_DETAIL_LENGTH = 160
+
+
+def _describe_validation_error(exc: RequestValidationError) -> str:
+    """Name what a rejected request got wrong, without echoing what it sent.
+
+    Pydantic records the offending value alongside every message, and these
+    bodies carry API keys, so only ``loc`` and ``msg`` reach the response.
+    ``loc`` is client-controlled for a forbidden extra field, hence the cap.
+    """
+
+    details: list[str] = []
+    for error in exc.errors()[:_MAX_REPORTED_ERRORS]:
+        location = ".".join(str(part) for part in error.get("loc", ())) or "request"
+        message = str(error.get("msg", "is invalid")).removeprefix("Value error, ")
+        details.append(f"{location}: {message}"[:_MAX_DETAIL_LENGTH])
+    if not details:
+        return "request validation failed"
+    return f"request validation failed: {'; '.join(details)}"
+
+
 def _error_response(
     request: Request,
     *,
@@ -104,6 +126,6 @@ def register_error_handlers(app: FastAPI) -> None:
         return _error_response(
             request,
             error_code="invalid_request",
-            message="request validation failed",
+            message=_describe_validation_error(exc),
             status_code=422,
         )

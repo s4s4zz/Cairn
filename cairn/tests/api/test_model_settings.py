@@ -91,3 +91,53 @@ def test_admin_can_enumerate_models_with_an_unsaved_key(
         "timeout": 30.0,
     }
     assert "sk-discovery-only-secret" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("base_url", "reason"),
+    [
+        ("", "at least 1 character"),
+        ("api.example.com", "must be an HTTP(S) service URL"),
+        ("http://192.168.1.9:3000", "must use HTTPS outside loopback"),
+        ("https://gateway.example.com/v1?beta=1", "must be an HTTP(S) service URL"),
+    ],
+)
+def test_rejected_discovery_names_the_base_url_it_could_not_accept(
+    admin_client: TestClient,
+    base_url: str,
+    reason: str,
+) -> None:
+    response = admin_client.post(
+        "/api/v1/model-provider/models",
+        json={
+            "provider": "anthropic",
+            "base_url": base_url,
+            "api_key": "sk-discovery-only-secret",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "invalid_request"
+    # A bare "request validation failed" left an operator no way to tell a
+    # blank field from a rejected scheme.
+    assert "base_url" in body["message"]
+    assert reason in body["message"]
+    assert "sk-discovery-only-secret" not in response.text
+
+
+def test_rejected_discovery_never_echoes_the_key_that_failed_validation(
+    admin_client: TestClient,
+) -> None:
+    response = admin_client.post(
+        "/api/v1/model-provider/models",
+        json={
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "sk-far-too-long-secret" + "x" * 16_384,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "sk-far-too-long-secret" not in response.text
+    assert "api_key" in response.json()["message"]
