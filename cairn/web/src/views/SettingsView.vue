@@ -28,6 +28,12 @@ const form = reactive({
 });
 
 const configured = computed(() => Boolean(status.value?.configured));
+// The picker mirrors form.model only while it names one of the fetched models.
+// A hand-typed id keeps the placeholder selected rather than pointing at an
+// unrelated entry.
+const selectedModel = computed(() =>
+  models.value.some((item) => item.id === form.model) ? form.model : "",
+);
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -54,6 +60,10 @@ function selectProvider(provider: ModelProvider): void {
   form.model = "";
   models.value = [];
   notice.value = "";
+}
+
+function pickModel(id: string): void {
+  if (id) form.model = id;
 }
 
 async function discover(): Promise<void> {
@@ -115,7 +125,7 @@ onMounted(load);
     <form class="settings-form" @submit.prevent="save">
       <div class="field field--wide"><label for="provider-base-url">Base URL</label><input id="provider-base-url" v-model.trim="form.baseUrl" class="input mono" type="url" required /></div>
       <div class="field field--wide"><label for="provider-api-key">API Key</label><div class="secret-input"><input id="provider-api-key" v-model="form.apiKey" class="input mono" :type="revealKey ? 'text' : 'password'" autocomplete="new-password" :placeholder="configured ? '已保存，留空保持不变' : ''" /><button class="icon-button" type="button" :title="revealKey ? '隐藏密钥' : '显示密钥'" @click="revealKey = !revealKey"><EyeOff v-if="revealKey" :size="16" /><Eye v-else :size="16" /></button></div></div>
-      <div class="field field--wide"><label for="provider-model">模型</label><div class="model-input"><input id="provider-model" v-model.trim="form.model" class="input mono" list="provider-model-options" required /><datalist id="provider-model-options"><option v-for="item in models" :key="item.id" :value="item.id">{{ item.display_name || item.id }}</option></datalist><button class="button button--secondary" type="button" :disabled="discovering || (!form.apiKey && !configured)" @click="discover"><RefreshCw :size="15" :class="{ spinning: discovering }" />{{ discovering ? "获取中" : "获取模型" }}</button></div></div>
+      <div class="field field--wide"><label for="provider-model">模型</label><div class="model-input"><input id="provider-model" v-model.trim="form.model" class="input mono" required /><select v-if="models.length" class="select" :value="selectedModel" aria-label="从获取到的模型中选择" @change="pickModel(($event.target as HTMLSelectElement).value)"><option disabled value="">选择模型（{{ models.length }}）</option><option v-for="item in models" :key="item.id" :value="item.id">{{ item.display_name || item.id }}</option></select><button class="button button--secondary" type="button" :disabled="discovering || (!form.apiKey && !configured)" @click="discover"><RefreshCw :size="15" :class="{ spinning: discovering }" />{{ discovering ? "获取中" : "获取模型" }}</button></div></div>
       <div v-if="error" class="inline-error field--wide">{{ error }}</div>
       <div v-if="notice" class="inline-success field--wide">{{ notice }}</div>
       <div class="settings-actions field--wide"><button class="button" type="submit" :disabled="saving"><Save :size="15" />{{ saving ? "保存中" : "保存配置" }}</button></div>
@@ -134,6 +144,7 @@ onMounted(load);
 .settings-form { display: grid; grid-template-columns: 1fr; gap: 17px; padding: 22px 20px; }
 .secret-input, .model-input { display: flex; align-items: center; gap: 8px; }
 .secret-input .input, .model-input .input { flex: 1; }
+.model-input .select { flex: none; width: 210px; }
 .secret-input { position: relative; }
 .secret-input .input { padding-right: 42px; }
 .secret-input .icon-button { position: absolute; right: 3px; }
@@ -141,5 +152,5 @@ onMounted(load);
 .inline-success { padding: 9px 11px; color: var(--success); background: var(--success-soft); border-radius: 5px; font-size: 11px; }
 .spinning { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 640px) { .settings-heading { align-items: stretch; flex-direction: column; } .provider-switch button { flex: 1; min-width: 0; } .model-input { align-items: stretch; flex-direction: column; } }
+@media (max-width: 640px) { .settings-heading { align-items: stretch; flex-direction: column; } .provider-switch button { flex: 1; min-width: 0; } .model-input { align-items: stretch; flex-direction: column; } .model-input .select { width: 100%; } }
 </style>
