@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,15 +21,23 @@ from cairn.server.errors import (
     NotFoundError,
 )
 from cairn.server.persistence.models import (
+    Artifact,
     AuditCoverage,
+    AuditFact,
+    AuditIntent,
     AuditPolicy,
     AuditRun,
     AuditRunStageEvent,
     AuditTask,
+    Evidence,
     Finding,
+    FindingLocation,
+    HumanReview,
+    Report,
     Repository,
     SourceSnapshot,
     SourceUpload,
+    Verification,
 )
 from cairn.server.persistence.base import is_expired
 from cairn.server.schemas.audit_runs import (
@@ -372,8 +381,57 @@ class AuditRunService:
                     error_code="audit_run_has_active_tasks",
                 )
 
-        self.session.delete(audit_run)
+        # Several run-owned records point back to both the run and the task
+        # that produced them.  Their task foreign keys are RESTRICT so deleting
+        # the AuditRun and relying on parallel database cascades is ambiguous:
+        # PostgreSQL may reach the task before it reaches Evidence, Facts,
+        # Intents or Artifacts.  Remove the graph leaves in dependency order,
+        # then let the final AuditRun delete clean up any future simple
+        # CASCADE-only children.
         try:
+            finding_ids = select(Finding.id).where(Finding.audit_run_id == run_id)
+            self.session.execute(
+                sql_delete(Evidence).where(Evidence.finding_id.in_(finding_ids))
+            )
+            self.session.execute(
+                sql_delete(FindingLocation).where(
+                    FindingLocation.finding_id.in_(finding_ids)
+                )
+            )
+            self.session.execute(
+                sql_delete(Verification).where(
+                    Verification.finding_id.in_(finding_ids)
+                )
+            )
+            self.session.execute(
+                sql_delete(HumanReview).where(
+                    HumanReview.finding_id.in_(finding_ids)
+                )
+            )
+            self.session.execute(
+                sql_delete(Finding).where(Finding.audit_run_id == run_id)
+            )
+            self.session.execute(
+                sql_delete(AuditIntent).where(AuditIntent.audit_run_id == run_id)
+            )
+            self.session.execute(
+                sql_delete(AuditFact).where(AuditFact.audit_run_id == run_id)
+            )
+            self.session.execute(
+                sql_delete(Report).where(Report.audit_run_id == run_id)
+            )
+            self.session.execute(
+                sql_delete(AuditCoverage).where(
+                    AuditCoverage.audit_run_id == run_id
+                )
+            )
+            self.session.execute(
+                sql_delete(Artifact).where(Artifact.audit_run_id == run_id)
+            )
+            self.session.execute(
+                sql_delete(AuditTask).where(AuditTask.audit_run_id == run_id)
+            )
+            self.session.delete(audit_run)
             self.session.flush()
         except IntegrityError as exc:
             self.session.rollback()

@@ -9,20 +9,32 @@ from cairn.server.auth.audit_log import AuditLogService
 from cairn.server.domain.enums import (
     ArtifactAccessLevel,
     ArtifactKind,
+    AuditFactKind,
+    AuditIntentStatus,
     AuditLogAction,
     AuditRunStatus,
     AuditTaskStatus,
     AuditTaskType,
     BuildSystem,
+    EvidenceType,
+    FindingConfidence,
+    FindingSeverity,
+    FindingStatus,
+    RuntimeVerificationStatus,
     SnapshotStatus,
 )
 from cairn.server.errors import InvalidStateError
 from cairn.server.persistence.models import (
     Artifact,
+    AuditFact,
+    AuditIntent,
+    AuditIntentSource,
     AuditLogEntry,
     AuditRun,
     AuditRunStageEvent,
     AuditTask,
+    Evidence,
+    Finding,
     SourceSnapshot,
 )
 from cairn.server.services.audit_runs import AuditRunService
@@ -296,6 +308,113 @@ def test_active_audit_run_must_be_cancelled_before_deletion(
     assert response.status_code == 409
     assert response.json()["error_code"] == "audit_run_not_deletable"
     assert client.get(f"/api/v1/audit-runs/{run['id']}").status_code == 200
+
+
+def test_delete_orders_populated_run_records_before_their_producing_task(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    repository = create_repository(client, "delete-populated")
+    policy = create_policy(client, "delete-populated-policy")
+    run = create_git_run(client, repository["id"], policy["id"])
+    run_id = UUID(run["id"])
+
+    with session_factory.begin() as session:
+        stored = session.get(AuditRun, run_id)
+        assert stored is not None
+        stored.status = AuditRunStatus.HUMAN_REVIEW.value
+        task = AuditTask(
+            audit_run_id=run_id,
+            type=AuditTaskType.SAST.value,
+            scope_key="deterministic:semgrep",
+            scope={"tool": "semgrep"},
+            required_capabilities=[],
+            status=AuditTaskStatus.SUCCEEDED.value,
+            attempt=1,
+            max_attempts=3,
+            timeout_seconds=300,
+            input_artifact_ids=[],
+            output_artifact_ids=[],
+        )
+        session.add(task)
+        session.flush()
+        artifact = Artifact(
+            audit_run_id=run_id,
+            kind=ArtifactKind.SCAN_RESULT.value,
+            storage_key="sha256/aa/" + "a" * 64,
+            sha256="a" * 64,
+            size_bytes=128,
+            media_type="application/x-tar",
+            access_level=ArtifactAccessLevel.NORMAL.value,
+            produced_by_task_id=task.id,
+        )
+        finding = Finding(
+            audit_run_id=run_id,
+            fingerprint="b" * 64,
+            title="Populated deletion fixture",
+            description="A run-owned finding with task-backed evidence.",
+            category="authorization",
+            cwe_id="CWE-862",
+            severity=FindingSeverity.HIGH.value,
+            confidence=FindingConfidence.HIGH.value,
+            status=FindingStatus.CANDIDATE.value,
+            attack_preconditions="An unauthenticated request reaches the endpoint.",
+            impact="Authorization may be bypassed.",
+            remediation="Require an explicit authorization policy.",
+            runtime_verification=RuntimeVerificationStatus.UNVERIFIED.value,
+            discovered_by="semgrep",
+        )
+        session.add_all([artifact, finding])
+        session.flush()
+        evidence = Evidence(
+            finding_id=finding.id,
+            type=EvidenceType.TOOL_RESULT.value,
+            artifact_id=artifact.id,
+            summary="Semgrep result",
+            sha256=artifact.sha256,
+            produced_by_task_id=task.id,
+        )
+        fact = AuditFact(
+            audit_run_id=run_id,
+            kind=AuditFactKind.ARCHITECTURE.value,
+            structured_payload={"framework": "spring"},
+            evidence_ids=[],
+            created_by_task_id=task.id,
+        )
+        intent = AuditIntent(
+            audit_run_id=run_id,
+            category="authorization",
+            scope={"module": "."},
+            required_capabilities=[],
+            status=AuditIntentStatus.PENDING.value,
+            created_by_task_id=task.id,
+        )
+        session.add_all([evidence, fact, intent])
+        session.flush()
+        session.add(
+            AuditIntentSource(
+                audit_intent_id=intent.id,
+                audit_fact_id=fact.id,
+            )
+        )
+        task_id = task.id
+        artifact_id = artifact.id
+        finding_id = finding.id
+        evidence_id = evidence.id
+        fact_id = fact.id
+        intent_id = intent.id
+
+    response = client.delete(f"/api/v1/audit-runs/{run['id']}")
+
+    assert response.status_code == 204
+    with session_factory() as session:
+        assert session.get(AuditRun, run_id) is None
+        assert session.get(AuditTask, task_id) is None
+        assert session.get(Artifact, artifact_id) is None
+        assert session.get(Finding, finding_id) is None
+        assert session.get(Evidence, evidence_id) is None
+        assert session.get(AuditFact, fact_id) is None
+        assert session.get(AuditIntent, intent_id) is None
 
 
 def test_run_creation_and_audit_log_roll_back_together(
