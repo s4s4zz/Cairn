@@ -237,10 +237,68 @@ def test_model_enumeration_uses_the_selected_provider_auth_and_sorts() -> None:
         configuration(ModelProvider.ANTHROPIC, model="claude-opus-4-1"),
         session=session,
     )
+    # A compatible gateway takes the key as a bearer token, the
+    # ANTHROPIC_AUTH_TOKEN convention, over the same Messages wire format.
+    bearer_call = session.get_calls[-1]
+    assert bearer_call["headers"]["authorization"] == f"Bearer {API_KEY}"
+    assert bearer_call["headers"]["anthropic-version"] == "2023-06-01"
+    assert "x-api-key" not in bearer_call["headers"]
+
+    session.get_calls.clear()
+    list_provider_models(
+        configuration(ModelProvider.ANTHROPIC_KEY, model="claude-opus-4-1"),
+        session=session,
+    )
     anthropic_call = session.get_calls[-1]
     assert anthropic_call["headers"]["x-api-key"] == API_KEY
     assert anthropic_call["headers"]["anthropic-version"] == "2023-06-01"
     assert "authorization" not in anthropic_call["headers"]
+
+
+def test_messages_forwarding_picks_the_auth_header_the_deployment_expects(
+    tmp_path,
+) -> None:
+    """Both Anthropic variants speak Messages; only the auth header differs."""
+
+    api_key_file = tmp_path / "legacy.key"
+    api_key_file.write_text("x" * 32, encoding="ascii")
+    grant_key_file = tmp_path / "grant.key"
+    grant_key_file.write_bytes(GRANT_KEY)
+    settings = GatewaySettings(
+        api_key_file=api_key_file,
+        grant_key_file=grant_key_file,
+        upstream_base_url="https://api.anthropic.invalid",
+    )
+    session = RecordingSession()
+    session.post_response = StubResponse(
+        200,
+        {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+        },
+    )
+    client = UpstreamClient(settings, session=session)
+    body = {
+        "model": "claude-opus-4-1",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    client.forward(body, configuration(ModelProvider.ANTHROPIC))
+    bearer_call = session.post_calls[-1]
+    assert bearer_call["url"] == "https://api.anthropic.invalid/v1/messages"
+    assert bearer_call["headers"]["authorization"] == f"Bearer {API_KEY}"
+    assert "x-api-key" not in bearer_call["headers"]
+
+    client.forward(body, configuration(ModelProvider.ANTHROPIC_KEY))
+    key_call = session.post_calls[-1]
+    assert key_call["url"] == "https://api.anthropic.invalid/v1/messages"
+    assert key_call["headers"]["x-api-key"] == API_KEY
+    assert "authorization" not in key_call["headers"]
 
 
 def test_gateway_reloads_workbench_provider_configuration_for_each_request(

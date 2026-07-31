@@ -37,6 +37,26 @@ class ModelListError(RuntimeError):
         self.http_status = http_status
 
 
+def anthropic_auth_headers(
+    provider: ModelProvider,
+    api_key: str,
+    anthropic_version: str,
+) -> dict[str, str]:
+    """Auth headers for the Anthropic Messages API.
+
+    Compatible gateways authenticate with `Authorization: Bearer` — the
+    ANTHROPIC_AUTH_TOKEN convention — while the official API takes the key in
+    `x-api-key`. Both speak the same wire format, so only the header differs.
+    """
+
+    headers = {"anthropic-version": anthropic_version}
+    if provider is ModelProvider.ANTHROPIC_KEY:
+        headers["x-api-key"] = api_key
+    else:
+        headers["authorization"] = f"Bearer {api_key}"
+    return headers
+
+
 def list_provider_models(
     configuration: ModelProviderConfiguration,
     *,
@@ -51,8 +71,13 @@ def list_provider_models(
     if metadata.provider is ModelProvider.OPENAI:
         headers["authorization"] = f"Bearer {configuration.api_key.get_secret_value()}"
     else:
-        headers["x-api-key"] = configuration.api_key.get_secret_value()
-        headers["anthropic-version"] = anthropic_version
+        headers.update(
+            anthropic_auth_headers(
+                metadata.provider,
+                configuration.api_key.get_secret_value(),
+                anthropic_version,
+            )
+        )
     try:
         response = active_session.get(
             provider_endpoint(metadata.base_url, MODELS_PATH),
@@ -392,7 +417,9 @@ class UpstreamClient:
         return ModelProviderConfiguration(
             metadata=ModelProviderMetadata(
                 revision="0" * 32,
-                provider=ModelProvider.ANTHROPIC,
+                # The legacy path carries a bare official-API key, which
+                # authenticates through `x-api-key`.
+                provider=ModelProvider.ANTHROPIC_KEY,
                 base_url=self.settings.upstream_base_url,
                 model=model,
                 updated_at="1970-01-01T00:00:00Z",
@@ -419,8 +446,11 @@ class UpstreamClient:
         payload = dict(body)
         payload.pop("stream", None)
         headers = {
-            "x-api-key": configuration.api_key.get_secret_value(),
-            "anthropic-version": self.settings.anthropic_version,
+            **anthropic_auth_headers(
+                configuration.metadata.provider,
+                configuration.api_key.get_secret_value(),
+                self.settings.anthropic_version,
+            ),
             "content-type": "application/json",
             "accept": "application/json",
         }

@@ -10,7 +10,10 @@ import { errorMessage, formatDate } from "@/utils";
 
 const defaults: Record<ModelProvider, string> = {
   openai: "https://api.openai.com",
-  anthropic: "https://api.anthropic.com",
+  // Bearer-authenticated deployments are third-party gateways with no
+  // canonical host, so the operator supplies the URL themselves.
+  anthropic: "",
+  "anthropic-key": "https://api.anthropic.com",
 };
 const loading = ref(true);
 const saving = ref(false);
@@ -66,7 +69,24 @@ function pickModel(id: string): void {
   if (id) form.model = id;
 }
 
+// 获取模型 sits outside the form's submit path, so the browser never applies
+// `required`/`type="url"` to the Base URL before we post it — and a bearer
+// gateway starts out blank. Catch the two mistakes the field itself invites;
+// the API reports the rest (credentials in the URL, HTTP outside loopback).
+function baseUrlProblem(): string {
+  const value = form.baseUrl.trim();
+  if (!value) return "请先填写 Base URL";
+  if (!/^https?:\/\/[^/?#\s]+/i.test(value)) return "Base URL 需以 http:// 或 https:// 开头";
+  return "";
+}
+
 async function discover(): Promise<void> {
+  const problem = baseUrlProblem();
+  if (problem) {
+    error.value = problem;
+    notice.value = "";
+    return;
+  }
   discovering.value = true;
   error.value = "";
   notice.value = "";
@@ -117,8 +137,9 @@ onMounted(load);
     <div class="settings-heading">
       <div><h2>模型供应商</h2><span v-if="configured"><CheckCircle2 :size="14" />已配置 · {{ formatDate(status?.updated_at) }}</span></div>
       <div class="provider-switch" role="group" aria-label="模型供应商">
-        <button type="button" :class="{ active: form.provider === 'openai' }" @click="selectProvider('openai')">OpenAI</button>
-        <button type="button" :class="{ active: form.provider === 'anthropic' }" @click="selectProvider('anthropic')">Anthropic</button>
+        <button type="button" title="Authorization: Bearer · /v1/chat/completions" :class="{ active: form.provider === 'openai' }" @click="selectProvider('openai')">OpenAI</button>
+        <button type="button" title="Authorization: Bearer · /v1/messages（ANTHROPIC_AUTH_TOKEN）" :class="{ active: form.provider === 'anthropic' }" @click="selectProvider('anthropic')">Anthropic</button>
+        <button type="button" title="x-api-key · /v1/messages（ANTHROPIC_API_KEY）" :class="{ active: form.provider === 'anthropic-key' }" @click="selectProvider('anthropic-key')">Anthropic Key</button>
       </div>
     </div>
 
@@ -139,7 +160,7 @@ onMounted(load);
 .settings-heading h2 { margin: 0 0 5px; font-size: 15px; }
 .settings-heading span { display: flex; align-items: center; gap: 5px; color: var(--success); font-size: 10px; }
 .provider-switch { display: inline-flex; padding: 3px; background: #e8edeb; border-radius: 6px; }
-.provider-switch button { min-width: 102px; padding: 7px 12px; color: var(--muted); background: transparent; border: 0; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 650; }
+.provider-switch button { min-width: 88px; padding: 7px 12px; color: var(--muted); background: transparent; border: 0; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 650; }
 .provider-switch button.active { color: var(--ink); background: #fff; box-shadow: 0 1px 4px rgba(20, 35, 29, .12); }
 .settings-form { display: grid; grid-template-columns: 1fr; gap: 17px; padding: 22px 20px; }
 .secret-input, .model-input { display: flex; align-items: center; gap: 8px; }

@@ -37,7 +37,7 @@ export type FindingStatus =
   | "accepted_risk";
 export type ReviewVerdict = "confirmed" | "rejected" | "accepted_risk" | "reverify";
 export type ReverifyMethod = "independent_agent" | "dynamic_poc";
-export type ModelProvider = "openai" | "anthropic";
+export type ModelProvider = "openai" | "anthropic" | "anthropic-key";
 
 export interface PageMeta {
   limit: number;

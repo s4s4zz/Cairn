@@ -18,12 +18,20 @@ from pydantic import BaseModel
 
 class ModelProvider(StrEnum):
     OPENAI = "openai"
+    # The Anthropic Messages API reached with `Authorization: Bearer`, which is
+    # the ANTHROPIC_AUTH_TOKEN convention every compatible third-party gateway
+    # speaks.
     ANTHROPIC = "anthropic"
+    # The official API's own scheme, `x-api-key`, i.e. ANTHROPIC_API_KEY.
+    ANTHROPIC_KEY = "anthropic-key"
 
 
 DEFAULT_PROVIDER_URLS: dict[ModelProvider, str] = {
     ModelProvider.OPENAI: "https://api.openai.com",
-    ModelProvider.ANTHROPIC: "https://api.anthropic.com",
+    # Bearer-authenticated deployments are third-party gateways with no
+    # canonical host, so the operator always supplies the URL.
+    ModelProvider.ANTHROPIC: "",
+    ModelProvider.ANTHROPIC_KEY: "https://api.anthropic.com",
 }
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})

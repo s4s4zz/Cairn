@@ -86,4 +86,44 @@ describe("SettingsView", () => {
     expect(wrapper.find(".model-input .select").exists()).toBe(false);
     wrapper.unmount();
   });
+
+  it("prefills a Base URL per provider and clears it for bearer gateways", async () => {
+    const wrapper = await renderView();
+    const buttons = wrapper.findAll(".provider-switch button");
+    expect(buttons.map((button) => button.text())).toEqual([
+      "OpenAI",
+      "Anthropic",
+      "Anthropic Key",
+    ]);
+    const baseUrl = () =>
+      (wrapper.get("#provider-base-url").element as HTMLInputElement).value;
+
+    await buttons[0].trigger("click");
+    expect(baseUrl()).toBe("https://api.openai.com");
+
+    // The official API is the one with a canonical host; a bearer deployment
+    // is a third-party gateway, so the operator supplies the URL.
+    await buttons[2].trigger("click");
+    expect(baseUrl()).toBe("https://api.anthropic.com");
+
+    await buttons[1].trigger("click");
+    expect(baseUrl()).toBe("");
+    wrapper.unmount();
+  });
+
+  it("refuses to fetch models before the Base URL is usable", async () => {
+    const wrapper = await renderView();
+    const buttons = wrapper.findAll(".provider-switch button");
+    // The saved provider is already anthropic, and selectProvider is a no-op
+    // on the active one, so switch away before switching back to blank it.
+    await buttons[0].trigger("click");
+    await buttons[1].trigger("click");
+
+    await wrapper.get(".model-input .button--secondary").trigger("click");
+    await flushPromises();
+
+    expect(modelProviderApi.models).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("请先填写 Base URL");
+    wrapper.unmount();
+  });
 });
